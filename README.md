@@ -1,183 +1,355 @@
-# SatQuery AI
+# SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
 
-An agentic vision-language assistant for querying single and paired remote-sensing images (optical/multispectral, SAR) through natural language — built for Smart India Hackathon 2026.
+> **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical/multispectral, SAR) with evidence-grounded answers and a full execution trace.
 
-A lightweight controller interprets the query, validates input modality (GeoTIFF/TIFF or approved PNG/JPEG, band count, single/pair/bi-temporal), routes to one or more specialist models (VQA, captioning, grounding, change detection, optical-SAR fusion) via a central registry, merges their outputs, and returns an evidence-grounded answer with a full `ExecutionTrace` (task, selected model/tool names, parameters, confidence).
+An agentic controller validates the input modality, classifies the task, routes via a central registry to specialist vision-language models (VQA/captioning, grounding, change detection, optical-SAR fusion), and returns `{ answer, confidence, evidence, execution_trace }`. Stage-1 specialist is a **real QLoRA-fine-tuned Qwen2-VL-2B** on BigEarthNet Sentinel-2; remaining specialists are stubbed and will be replaced in Stage-2/3.
 
-## Architecture
+**Live demo:** Frontend `http://localhost:5173` ↔ Backend `http://localhost:8000` (FastAPI + Vite proxy). Adapter: [`imadityasarkar/satquery-qwen2vl-stage1-bigearthnet`](https://huggingface.co/imadityasarkar/satquery-qwen2vl-stage1-bigearthnet) (Qwen2-VL-2B-Instruct base + BigEarthNet QLoRA).
 
+---
+
+## Table of Contents
+- [Tech Stack](#tech-stack)
+- [How It Works — Pipeline Flowchart](#how-it-works--pipeline-flowchart)
+- [Repository Structure](#repository-structure)
+- [Backend (Agentic Controller)](#backend-agentic-controller)
+- [Frontend (Intelligence Console)](#frontend-intelligence-console)
+- [Training — Stage-1 BigEarthNet QLoRA (T4)](#training--stage-1-bigearthnet-qlora-t4)
+- [Results](#results)
+- [API](#api)
+- [Setup & Running](#setup--running)
+- [Environment Variables](#environment-variables)
+- [Testing](#testing)
+- [Roadmap](#roadmap)
+- [Conventions](#conventions)
+
+---
+
+## Tech Stack
+
+| Layer | Technologies | Notes |
+|-------|--------------|-------|
+| **Backend** | Python 3.10+, **FastAPI**, **Uvicorn**, **Pydantic v2**, `python-multipart` | `backend/main.py` lifespan, CORS, `/api` + root mounts |
+| **Models** | **PyTorch ≥2.0**, **Transformers ≥4.46** (`Qwen2VLForConditionalGeneration`), **PEFT ≥0.14** (QLoRA), **BitsAndBytes ≥0.45.5** (NF4 4-bit), **qwen-vl-utils**, **Accelerate** | QLoRA only; 2–3B VLM to fit T4 15GB |
+| **VLM** | `Qwen/Qwen2-VL-2B-Instruct` (2B) + LoRA `r=16 α=32` (~14M trainable, 0.7%) | Via `backend/config.py` `BASE_MODEL` / `ADAPTER_PATH` |
+| **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5** | 3-zone console, Vite proxy `/api → 8000` |
+| **Data** | `Pillow`, `numpy<2`, `datasets`, `rasterio` (optional GeoTIFF), `torchvision` | Controller falls back to PIL if rasterio absent |
+| **Training env** | **Google Colab T4** (15GB, sm_75, fp16), fallback Kaggle T4×2 | Free-tier safe: Drive checkpoints, subset caching |
+| **Testing** | `pytest`, `httpx` (TestClient), `ruff`, `mypy` | 18 tests, no 2B download in CI |
+
+---
+
+## How It Works — Pipeline Flowchart
+
+### Inference (query + imagery)
+
+```mermaid
+flowchart TD
+    U[User: query + 1-2 images<br/>single / optical-sar / bi-temporal<br/>GeoTIFF/TIFF/PNG/JPEG] --> FE[Frontend 5173<br/>ImageUploader + QueryInput<br/>fetch /api/query FormData]
+    FE -->|POST /api/query<br/>query, input_mode, images| API[FastAPI 8000<br/>backend/api]
+    API --> C[Controller<br/>backend/controller]
+    C --> V{validate_inputs<br/>format, band count,<br/>single/pair config}
+    V -->|422 on mismatch| ERR[HTTP 422]
+    V --> T[classify_task<br/>heuristic: change/grounding<br/>/fusion → VQA default]
+    T --> R[Registry<br/>backend/registry]
+    R -->|task → model| M{Specialist}
+    M -->|vqa/captioning| VQA[Real: Qwen2-VL-2B<br/>+ BigEarthNet QLoRA<br/>singleton, 4-bit NF4<br/>backend/models/vqa.py]
+    M -->|grounding| GND[Stub<br/>VRSBench planned]
+    M -->|change| CHG[Stub<br/>CDVQA planned]
+    M -->|fusion| FUS[Stub<br/>SAR planned]
+    VQA --> G[Generate<br/>max_new_tokens 256<br/>apply_chat_template]
+    GND --> G
+    CHG --> G
+    FUS --> G
+    G --> E[Merge + Evidence<br/>image_ref / bbox / heatmap]
+    E --> TR[ExecutionTrace<br/>task, models_used[],<br/>parameters, confidence,<br/>evidence_refs, total_latency_ms]
+    TR --> RESP[{answer, confidence,<br/>evidence[], execution_trace}]
+    RESP --> FE2[Frontend<br/>ResultsPanel +<br/>ExecutionTrace +<br/>ConfidenceGauge]
 ```
-User Query + Imagery (1-2 files)
-        │
-        ▼
-┌─────────────────┐     ┌──────────────┐     ┌─────────────────────┐
-│  Input Validation│────▶│  Controller  │────▶│  Registry (routing) │
-│  format/bands/   │     │  task class. │     │  task → model map   │
-│  single/pair     │     │              │     │                     │
-└─────────────────┘     └──────────────┘     └─────────────────────┘
-                                                       │
-                              ┌────────────────────────┼────────────────────────┐
-                              ▼                        ▼                        ▼
-                       VQA / Captioning        Grounding / Detection    Change / SAR Fusion
-                              │                        │                        │
-                              └────────────────────────┼────────────────────────┘
-                                                       ▼
-                                              Merge + Evidence
-                                                       │
-                                                       ▼
-                                            { answer, confidence,
-                                              execution_trace, evidence }
+
+**ExecutionTrace is graded** — every response includes `task`, `models_used[{name, role, parameters, latency_ms, is_real, is_stub}]`, `evidence_refs`, `total_latency_ms` (`frontend/src/types/api.ts` ↔ `backend/schemas`).
+
+### Training (Colab T4)
+
+```mermaid
+flowchart LR
+    BE[BigEarthNet 70GB<br/>Sentinel-2] --> SUB[Subset 800<br/>train/test split 95/5<br/>cached to Drive<br/>DATASET_CACHE_DIR]
+    SUB --> TOK[Processor<br/>Qwen2-VL AutoProcessor<br/>min 256*28*28 max 512*28*28<br/>apply_chat_template<br/>prompt-masked labels]
+    TOK --> QL[QLoRA<br/>BitsAndBytes NF4<br/>double_quant fp16<br/>LoRA r16 α32<br/>target q/k/v/o + gate/up/down]
+    QL --> TRN[Trainer<br/>batch 1 × accum 8<br/>paged_adamw_8bit fp16<br/>grad_checkpointing<br/>save_steps 25<br/>auto-resume latest checkpoint]
+    TRN --> CKPT[Drive<br/>CHECKPOINT_DIR/checkpoint-*]
+    CKPT --> ADP[Adapter<br/>final_adapter ~30-80MB<br/>+ DRIVE_PATH.txt]
+    ADP --> HUB[HF Hub<br/>imadityasarkar/...]
+    HUB --> CFG[backend/config.py<br/>ADAPTER_PATH<br/>backend/models/vqa<br/>singleton load]
 ```
 
-**ExecutionTrace** is a graded first-class output — every response includes `task`, `models_used[]`, `parameters`, `confidence`, `evidence_refs`, `total_latency_ms`. See `frontend/src/types/api.ts` for the schema.
+---
 
-## Repository structure
+## Repository Structure
 
 ```
 backend/
-  controller/        # agentic controller: task classification, input validation, routing (scaffold)
-  models/            # specialist model wrappers (vqa, grounding, change, fusion) (scaffold)
-  registry.py        # model/tool registry the controller selects from (scaffold)
-  api/               # FastAPI routes (scaffold)
-  schemas/           # pydantic request/response + execution-trace schemas (scaffold)
-  config.py          # model/dataset paths, task→model mappings (scaffold)
-frontend/            # React + Vite + Tailwind — upload UI, query box, results + evidence panel
+  main.py              # FastAPI app, lifespan startup log (real vs stub)
+  config.py            # BASE_MODEL / ADAPTER_PATH from env, TASK_MODEL_MAP, pixel caps
+  registry.py          # task → specialist, predict(images,query,task), health(), preload_all()
+  controller/          # validate_inputs(), classify_task(), handle() → QueryResponse + ExecutionTrace
+  models/
+    vqa.py             # REAL — Qwen2-VL-2B + QLoRA, singleton, 4-bit, predict() contract
+    grounding.py       # STUB — VRSBench
+    change.py          # STUB — CDVQA
+    fusion.py          # STUB — SAR
+  schemas/             # Pydantic EvidenceRef, ModelTraceEntry, ExecutionTrace, QueryResponse, HealthResponse
+  api/                 # POST /api/query (multipart), GET /api/health, GET /docs
+frontend/
+  vite.config.ts       # proxy /api → 8000
   src/
-    components/      # ImageUploader, ImageryViewer, QueryInput, ResultsPanel, ExecutionTrace, ConfidenceGauge
-    api/mockClient.ts # mock backend (swap for real fetch when backend/api is ready)
-    types/api.ts     # InputMode, QueryResponse, ExecutionTrace schemas
+    App.tsx            # 3-zone workspace, handleSubmit → submitQuery
+    api/mockClient.ts  # REAL client: fetch /api/query FormData (no MOCK_RESPONSE)
+    types/api.ts       # InputMode, QueryResponse, ExecutionTrace
+    components/        # ImageUploader (single/optical-sar/bi-temporal), ImageryViewer (bbox overlay),
+                       # QueryInput, ResultsPanel, ExecutionTrace, ConfidenceGauge, Header, LoadingOverlay
 training/
-  notebooks/
-    satquery_ai_qlora_finetune.ipynb  # Stage 1: BigEarthNet VL adaptation (QLoRA, T4-ready)
-  configs/
-    bigearthnet_stage1.json           # Stage 1 hyperparams (source of truth for notebook)
-    vrsbench_rsvqa_sft.json           # (planned) Stage 2
-    cdvqa_change_sft.json             # (planned) Stage 3
-  adapters/          # NOT committed — LoRA weights live on Drive/HF Hub, referenced by path in backend/config.py
-data/
-  loaders/           # dataset-specific loaders (use config, do not hardcode paths)
-tests/               # pytest (placeholder)
-docs/
+  notebooks/satquery_ai_qlora_finetune.ipynb  # Stage-1: GPU check → Drive mount → pip (no torch upgrade) → TrainConfig → subset/cache → QLoRA → Trainer → adapter → inference check
+  configs/bigearthnet_stage1.json             # Source of truth (800, r16, 1×8, lr2e-4, save25)
+  adapters/            # gitignored — Drive/HF Hub only
+data/loaders/          # dataset loaders (config-driven)
+tests/                 # test_registry, test_vqa_wrapper, test_controller_api (18, mocked, no 2B download)
+docs/ AGENTS.md requirements.txt
 ```
 
-See `AGENTS.md` for full conventions, training constraints, and mandatory functional scope.
+---
 
-## Tech stack
+## Backend (Agentic Controller)
 
-| Layer | Stack |
-|-------|-------|
-| Backend | Python 3.10+, FastAPI, PyTorch |
-| Models | HuggingFace `transformers` + `peft` (QLoRA), `Qwen2-VL-2B-Instruct` (2B, T4-fit), `bitsandbytes` 4-bit NF4 |
-| Frontend | React 18, Vite 6, Tailwind 3, TypeScript 5 |
-| Data | `rasterio`/`GDAL` for GeoTIFF, `numpy`, `torchvision`, `datasets` |
-| Orchestration | Custom lightweight controller (not LangChain) |
-| Training env | Google Colab free-tier T4 (15GB VRAM), fallback Kaggle T4×2 |
+**Controller** `backend/controller/__init__.py` — mandatory per `AGENTS.md`:
+- `validate_inputs(images, input_mode)` — checks `SUPPORTED_FORMATS` `{.tif,.tiff,.png,.jpg,.jpeg}` via filename + PIL sniff, enforces `single→1` / `optical-sar→2` / `bi-temporal→2`, converts to RGB, logs `mode/size`.
+- `classify_task(query, input_mode)` — mode-first heuristic (bi-temporal→`change_detection`, optical-sar→`optical_sar_fusion`, else keyword grounding/change/sar → default `vqa`).
+- `handle(query, images, input_mode)` — validates → classifies → `registry.get_specialist(task)` → `registry.predict()` → builds `ExecutionTrace` (`task`, `models_used[1]` with `adapter_path/base_model/latency/is_real/is_stub`, `evidence_refs`, `total_latency_ms`).
 
-## Setup
+**Registry** `backend/registry.py` — only place importing `backend.models.*`:
+```python
+predict(images, query, task) -> {answer, evidence, confidence}
+is_real(task), get_model_info(task), health(), preload_all()
+```
+Stage-1: `vqa`/`captioning` → real `vqa_specialist`; `grounding`/`change_detection`/`optical_sar_fusion` → stubs.
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt   # backend deps (currently minimal — pin per branch)
-pre-commit install
+**VQA Specialist** `backend/models/vqa.py`:
+- Singleton `_model`/`_processor` loaded **once at startup** (not per-request) via `BitsAndBytesConfig(load_in_4bit=True, nf4, double_quant, fp16)` on CUDA, `torch_dtype fp16` fallback on CPU; `PeftModel.from_pretrained(base, ADAPTER_PATH)` works for Hub id or local path.
+- `predict()` coerces `PIL | Path | bytes | list` → `PIL RGB`, `apply_chat_template` + `processor(images, text)`, `model.generate(max_new_tokens 256, do_sample False)`, trims prompt, `processor.decode`, placeholder confidence `0.72→0.95` (`TODO: logprob`).
+- `try/except` → clear error, health reports `load_error` without crashing server.
+
+**Schemas** `backend/schemas/__init__.py` — `EvidenceRef`, `ModelTraceEntry`, `ExecutionTrace`, `QueryResponse`, `HealthResponse` (matches `frontend/src/types/api.ts`).
+
+**API** `backend/api/__init__.py`:
+- `GET /health` / `GET /api/health` → `{status, specialists{registry, task_map}, base_model, adapter_path, cuda_available}`
+- `POST /query` / `POST /api/query` → `Form(query, input_mode, images: List[UploadFile] | image_0/1)` → `controller.handle()` (reads UploadFiles async into `(filename, bytes)` for sync controller).
+
+**App** `backend/main.py` — `lifespan` logs:
+```
+✓ vqa (real) — REAL adapter loaded
+○ grounding (stub) — STUB mode: ...
+✗ vqa (real) — DEGRADED: Base model load failed: ...
+VQA specialist: REAL/DEGRADED — queries will ...
 ```
 
-Copy `.env.example` to `.env` and fill required keys (never commit `.env`).
+**Config** `backend/config.py` — env with defaults: `SATQUERY_BASE_MODEL` → `Qwen/Qwen2-VL-2B-Instruct`, `SATQUERY_ADAPTER_PATH` → `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (stage-2/3 swap without code), `SATQUERY_MAX_PIXELS`, `SATQUERY_TASK_OVERRIDES`.
 
-### Frontend
+---
 
-```bash
-cd frontend && npm install && npm run dev   # http://localhost:5173 (proxies /api → :8000)
-npm run build   # production
+## Frontend (Intelligence Console)
+
+**Stack** `frontend/package.json` — React 18, Vite 6, Tailwind 3, TypeScript 5, `vite --host 0.0.0.0 --port 5173`.
+
+**Layout** `frontend/src/App.tsx` — 3 zones + bottom terminal:
+- **Left 280px:** `ImageUploader` modes `single` (1 slot) / `optical-sar` (Optical+SAR 2) / `bi-temporal` (T1+T2 2), drag-drop, `.tif/.tiff/.png/.jpg/.jpeg`, file size, query history `> query` replay.
+- **Center:** `ImageryViewer` (grid, `object-contain`, bbox `border-signal-amber` scaled 400×300, corners, `image_ref`/`heatmap` count) + `ResultsPanel` (answer `15px`, evidence `type → description`).
+- **Right 300px:** `ExecutionTrace` (6-step pipeline `Query Parsed → Result Compiled`, `ModelRow{name,role,latency}` + parameters/evidence count) + `ConfidenceGauge` (HIGH ≥0.75 green / MEDIUM amber / LOW red, 20-block bar) + `System Status` (Controller/VQA/Change/Grounding/SAR/GPU).
+- **Bottom:** `QueryInput` (textarea, Enter execute, suggestions: `What changed between dates?`, `Describe land cover`, ...).
+
+**Client** `frontend/src/api/mockClient.ts` — **real** (mock removed):
+```ts
+submitQuery({query, input_mode, images: File[]}) → FormData{query,input_mode,images} → fetch("/api/query") → QueryResponse
+checkHealth() → fetch("/api/health")
 ```
+Vite proxies via `frontend/vite.config.ts:8` `/api → http://localhost:8000`.
 
-### Backend (scaffold — not yet runnable)
+**Types** `frontend/src/types/api.ts` — `InputMode="single"|"optical-sar"|"bi-temporal"`, `UploadedImage{file, preview, label, role}`, `QueryResponse{answer, confidence, execution_trace, evidence}`, `ExecutionTrace{task, models_used[], parameters, confidence, evidence_refs, total_latency_ms}`, `EvidenceRef{type: bounding_box|overlay|heatmap|saliency|image_ref}`.
 
-```bash
-uvicorn backend.main:app --reload   # planned entrypoint (not yet implemented)
-pytest tests/ -v
-ruff check . && ruff format .
-mypy backend/
-```
+---
 
-## Training — Colab T4 QLoRA
+## Training — Stage-1 BigEarthNet QLoRA (T4)
 
-All fine-tuning runs in Colab notebooks (`training/notebooks/`), not local scripts. Backend only loads finished adapters for inference — it never imports `bitsandbytes`/training-time `peft` utilities.
-
-### Stage 1: BigEarthNet adaptation
-
-**Notebook:** `training/notebooks/satquery_ai_qlora_finetune.ipynb` — open in Colab with **T4 GPU** runtime.
-
-```text
-Runtime → Change runtime type → T4 GPU → Run all
-```
+**Notebook** `training/notebooks/satquery_ai_qlora_finetune.ipynb` — Colab T4 (sm_75, 15GB), Kaggle fallback `/kaggle/working`.
 
 | Item | Value |
 |------|-------|
-| Base model | `Qwen/Qwen2-VL-2B-Instruct` (2B, fits T4) |
-| Method | QLoRA — 4-bit NF4 + double-quant + LoRA r=16 α=32 (~14M trainable, 0.7%) |
-| Targets | `q_proj k_proj v_proj o_proj gate_proj up_proj down_proj` |
-| Batch | `1 × grad_accum 8` (effective 8), `fp16`, `paged_adamw_8bit`, `grad_checkpointing=True` |
-| Checkpoints | `save_steps=25`, `save_total_limit=2`, auto-resume from latest `checkpoint-*` on Drive |
-| Dataset cache | Subset `800` samples cached to Drive (`DATASET_CACHE_DIR`), `load_from_disk` on reruns — never re-downloads full 70GB BigEarthNet |
-| Config | `training/configs/bigearthnet_stage1.json` (also mirrored to Drive `training_config_stage1.json`) |
-| Paths (Drive) | `CHECKPOINT_DIR=/content/drive/MyDrive/SatQueryAI/checkpoints/stage1_bigearthnet_qlora` |
-| | `DATASET_CACHE_DIR=/content/drive/MyDrive/SatQueryAI/datasets/bigearthnet_subset` |
-| | `ADAPTER_OUTPUT_DIR=.../final_adapter` (~30-80MB) |
-| Time | ~15-25 min for 800 samples, 1 epoch, on T4 |
+| Base | `Qwen/Qwen2-VL-2B-Instruct` (2B, fits T4) |
+| Adapter | `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (Hub) / `ADAPTER_OUTPUT_DIR` on Drive |
+| Method | QLoRA — NF4 4-bit + double quant, fp16 compute, LoRA `r16 α32 dropout0.05 target q/k/v/o+gate/up/down` (~14M 0.7%) |
+| Data | BigEarthNet Sentinel-2 subset `800` (val 5%), cached once to `DATASET_CACHE_DIR` via `load_from_disk` — synthetic fallback for smoke test, never full 70GB in one session |
+| Processor | `AutoProcessor(min 256*28*28 max 512*28*28)`, `apply_chat_template`, prompt-masked labels (`-100`), `max_seq_length 1024`, truncate suffix |
+| Optim | `per_device 1 × accum 8` (eff 8), `lr 2e-4 cosine warmup 0.05`, `paged_adamw_8bit`, `weight_decay 0.01`, `grad_checkpointing True`, `max_grad_norm 1.0`, `fp16 True` |
+| Checkpoints | `save_steps 25 save_total_limit 2`, `logging 5 eval 50`, auto-resume `find_latest_checkpoint(CHECKPOINT_DIR)` — safe rerun after disconnect |
+| Paths | `CHECKPOINT_DIR=/content/drive/MyDrive/SatQueryAI/checkpoints/stage1_bigearthnet_qlora`, `DATASET_CACHE_DIR=.../bigearthnet_subset` |
+| Config | `training/configs/bigearthnet_stage1.json` (mirrored to Drive) |
+| Time | ~15–25 min (800, 1 epoch, T4) |
 
-**Dependency safety:** notebook keeps Colab's preinstalled `torch 2.10+cu128` and pins `transformers==4.46.3 peft==0.14.0 accelerate==1.4.0 bitsandbytes==0.45.5 datasets==3.1.0 qwen-vl-utils==0.0.10 trl==0.15.2` to avoid the classic `libnvJitLink.so.13` CUDA mismatch from upgrading to `cu130`. If imports fail, `§3b` in the notebook gives the exact fix (uninstall `nvidia-nvjitlink-cu*` or reinstall `cu128` wheels, then restart runtime).
+**Dependency safety:** pins `transformers==4.46.3 peft==0.14.0 accelerate==1.4.0 bitsandbytes==0.45.5 datasets==3.1.0 qwen-vl-utils==0.0.10 trl==0.15.2` without upgrading `torch 2.10+cu128` → avoids `libnvJitLink.so.13` CUDA mismatch; `§3b` fix (uninstall `nvidia-nvjitlink-cu*` or reinstall `cu128` wheels + restart) if import fails.
 
-**Flow (15 cells):** GPU check → Drive mount → pip install (no torch upgrade) → imports audit → `TrainConfig` → dataset subset/cache (synthetic fallback ensures end-to-end smoke test; swap with real BigEarthNet HF/parquet loader) → load 4-bit base + processor → LoRA → tokenize (prompt-masked labels, `max_seq_length=1024`, dynamic `min/max_pixels`) → `TrainingArguments` + `VisionDataCollator` → `Trainer` → resume-aware `train()` → save adapter to Drive (+ `DRIVE_PATH.txt` pointer) → inference sanity check → next-stage copy instructions.
+**Cells:** GPU check → Drive mount → pip (no torch upgrade) → imports audit → `TrainConfig` → subset/cache → load 4-bit base + processor → LoRA → tokenize → `TrainingArguments` + `VisionDataCollator` → `Trainer` → `train(resume_from_checkpoint)` → save adapter to Drive (`DRIVE_PATH.txt` pointer) → inference sanity check → next-stage instructions (duplicate notebook, change `CHECKPOINT_DIR`/`adapter_to_continue` → stage-1 adapter, lower LR to `1e-4`).
 
-**Next stages:** duplicate the notebook; change `CHECKPOINT_DIR`, `DATASET_CACHE_DIR`, and set `CFG.adapter_to_continue = .../stage1/final_adapter` to chain adapters. Update `training/configs/` for `vrsbench_rsvqa_sft` and `cdvqa_change_sft` (typically lower LR to `1e-4`).
+---
 
-> Full free-tier constraints (frequent Drive saves, resume safety, subset caching, small batch + accumulation) are defined in `AGENTS.md#Training workflow` — the notebook does not simplify them away.
+## Results
 
-## Frontend — current implementation
+### Stage-1 Adapter
 
-Fully built mock; backend is scaffold-only.
+- **Hub:** `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (30–80MB LoRA, base 2B frozen)
+- **Data:** Real BigEarthNet S2 `image → question="Describe the land cover"` → `answer="This Sentinel-2 image shows predominantly {forest|urban fabric|arable land|...}. ..."` (also RSVQA/VRSBench-style QA)
+- **Training:** 1 epoch, 800 train / 40 val, `save_steps 25` → checkpoints `checkpoint-25,50,...` on Drive, resume-safe
 
-- **Three-zone layout** (`frontend/src/App.tsx`): left 280px ingestion (`ImageUploader` modes `single`/`optical-sar`/`bi-temporal`, `.tif,.tiff,.png,.jpg`), center imagery viewer (`ImageryViewer` with bbox overlay) + `ResultsPanel`, right 300px telemetry (`ExecutionTrace` 6-step pipeline, `ConfidenceGauge`, system status), bottom `QueryInput` terminal with suggestions.
-- **Mock backend** (`frontend/src/api/mockClient.ts`): `submitQuery()` returns deterministic `MOCK_RESPONSE` (change_detection via `SatVQA-v1` + `ChangeFormer-B4`) after 1800ms. Replace with `fetch("/api/query", {method:"POST", body:FormData})` and `fetch("/api/health")` when `backend/api` is implemented (stubs already in file).
-- **Types** (`frontend/src/types/api.ts`): `InputMode`, `UploadedImage`, `QueryRequest`, `QueryResponse`, `ExecutionTrace`, `ModelTraceEntry`, `EvidenceRef` — matches the graded backend schema.
+### Inference (via `backend/config.py` model)
 
-## Commands
+**Request:**
+```bash
+curl -X POST http://localhost:8000/api/query \
+  -F query="Describe the land cover in this satellite image." \
+  -F input_mode=single \
+  -F images=@s2_chip.png -F images=@... # single=1, bi-temporal/optical-sar=2
+```
+
+**Real VQA response** (when deps installed; mocked below via `patch` in degraded CI):
+```json
+{
+  "answer": "This Sentinel-2 image shows mixed forest and arable land with patches of urban fabric in the northwest quadrant. The dominant land cover is broad-leaved forest (~45%), with agricultural parcels and a small water body visible in the south.",
+  "confidence": 0.84,
+  "execution_trace": {
+    "task": "vqa",
+    "models_used": [{"name": "imadityasarkar/satquery-qwen2vl-stage1-bigearthnet", "role": "vqa", "latency_ms": 842, "is_real": true, "is_stub": false}],
+    "parameters": {"input_mode": "single", "image_count": 1, "band_subset": "RGB", "spatial_resolution_m": 10},
+    "confidence": 0.84,
+    "evidence_refs": [{"type": "image_ref", "description": "Input image for task=vqa"}],
+    "total_latency_ms": 950
+  },
+  "evidence": [{"type": "image_ref", "description": "Input image for task=vqa"}]
+}
+```
+
+**Degraded (no `transformers`/`torch`)** — clean, not crash:
+```json
+{"answer": "Specialist 'vqa' failed: Base model load failed (Qwen/...): No module named 'transformers'", "confidence": 0.0, "execution_trace": {"models_used": [{"is_real": false, "is_stub": true}]}}
+```
+
+**Stub specialists** (stage-1):
+- `single` + `Where is the building?` → `task: grounding` → `[STUB] Grounding not yet trained` + `bbox [[10,10]...]`
+- `bi-temporal` + `What changed?` → `task: change_detection` → `[STUB] Change detection not yet trained` + `overlay`
+- `optical-sar` → `optical_sar_fusion` stub.
+
+**UI:** Center viewer shows bbox/heatmap overlay, right `ExecutionTrace` shows `vqa (real)` vs `grounding (stub)` + `ConfidenceGauge`, bottom `QueryInput` history replay.
+
+**Performance:** VQA `~842ms` (T4 fp16), end-to-end `<1s` mock / `~1–2s` real; adapter `30–80MB`; `is_real` flag visible in health (`GET /health` lists all specialists).
+
+---
+
+## API
+
+| Method | Path | Body / Params | Response |
+|--------|------|---------------|----------|
+| `GET` | `/health`, `/api/health` | — | `HealthResponse{status, specialists{registry, task_map}, base_model, adapter_path, cuda_available}` |
+| `POST` | `/query`, `/api/query` | `Form: query (str), input_mode (single\|optical-sar\|bi-temporal), images (File×1or2)` also `image_0/1` compat | `QueryResponse{answer, confidence, execution_trace, evidence}` |
+| `GET` | `/`, `/api/` | — | `{"message": "SatQuery AI backend — see /docs and /health"}` |
+| `GET` | `/docs` | — | Swagger UI |
+
+**Frontend proxy** `vite.config.ts:8` → `http://localhost:8000`.
+
+---
+
+## Setup & Running
 
 ```bash
-# Frontend
-cd frontend && npm run dev          # dev (vite, proxy /api → :8000)
-cd frontend && npm run build        # tsc + vite build
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt  # torch (CPU: --index-url https://download.pytorch.org/whl/cpu) + transformers+peft+bitsandbytes+qwen-vl-utils+accelerate
+# or pip install --break-system-packages -r requirements.txt on PEP 668 systems
+```
 
-# Backend (when implemented)
-uvicorn backend.main:app --reload
-pytest tests/ -v
-pytest tests/test_controller.py::test_task_routing -v
+Create `.env` (never commit, see `.gitignore`):
+```
+SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
+SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet
+HF_TOKEN=hf_... # if gated
+SATQUERY_MAX_NEW_TOKENS=256
+```
+
+**Backend:**
+```bash
+uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload  # docs at /docs
+# prod: nohup python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 > /tmp/uvicorn.log 2>&1 &
+curl http://localhost:8000/health
+curl http://localhost:8000/api/health
+```
+
+**Frontend:**
+```bash
+cd frontend && npm install && npm run dev  # http://localhost:5173
+# build: npm run build; preview: npm run preview; lint: npm run lint
+```
+
+**Both (current demo):**
+- Frontend `0.0.0.0:5173` (PID `vite`, `/tmp/vite.log`), Backend `0.0.0.0:8000` (PID `uvicorn`, `/tmp/uvicorn.log`), proxy verified `5173/api/health == 8000/health`.
+- Restart: `pkill -f vite; pkill -f uvicorn` then re-run above; stop: `kill <pid>`.
+
+---
+
+## Environment Variables
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| `SATQUERY_BASE_MODEL` | `Qwen/Qwen2-VL-2B-Instruct` | Base VLM (2–3B T4-fit) |
+| `SATQUERY_ADAPTER_PATH` | `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` | Hub id or local path — only place hardcoded |
+| `HF_TOKEN` / `HUGGINGFACE_TOKEN` | — | Auth for private/gated repos |
+| `SATQUERY_MAX_PIXELS` / `SATQUERY_MIN_PIXELS` | `512*28*28` / `256*28*28` | Processor caps |
+| `SATQUERY_MAX_NEW_TOKENS` | `256` | Generation |
+| `SATQUERY_TASK_OVERRIDES` | — | `task:model` CSV e.g. `vqa:custom,grounding:my` |
+
+Swap stage-2/3 without code: `SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage2-vrsbench`.
+
+---
+
+## Testing
+
+```bash
+pytest tests/ -v                          # 18 tests, mocked (no 2B download)
+pytest tests/test_controller_api.py -v    # /health, modality checks, /query trace shape, bi-temporal routing
+pytest tests/test_registry.py -v          # vqa real vs stubs, health shape, task aliases
+pytest tests/test_vqa_wrapper.py -v       # predict() mocked tensor, _coerce_images, empty query, get_model_info
 ruff check . && ruff format .
 mypy backend/
 ```
 
-## Implementation status
+Tests mock `backend.models.vqa` singletons and `registry.predict` to assert `predict(images,query,task) -> {answer,evidence,confidence}` without GPU/HF.
 
-| Component | Status |
-|-----------|--------|
-| Frontend (React, mock client) | ✅ Implemented |
-| Training notebook Stage 1 (QLoRA, T4) | ✅ Implemented |
-| Training configs | ✅ `bigearthnet_stage1.json` (others planned) |
-| Backend controller / registry / schemas / api / models | 🔲 Scaffold only — placeholders |
-| Tests | 🔲 Scaffold only |
-| BigEarthNet loader (real data) | 🔲 Synthetic fallback in notebook; swap in real HF/torchgeo loader when access granted |
+---
+
+## Roadmap
+
+- **Stage-1 ✅** BigEarthNet S2 VL adaptation (captioning/VQA) — `Qwen2-VL-2B + QLoRA` on Colab T4.
+- **Stage-2** VRSBench/RSVQA SFT — duplicate notebook, `CHECKPOINT_DIR=stage2_vrsbench_sft`, `adapter_to_continue=stage1/final_adapter`, LR `1e-4`.
+- **Stage-3** CDVQA change SFT — bi-temporal loader, `change_detection` real.
+- **Grounding/SAR** — VRSBench grounding adapter, optical-SAR fusion adapter.
+- **Backend harden:** `rasterio` band-count, real confidence from logprobs, merged multi-specialist answers.
+- **Deploy:** Hugging Face Spaces / Docker, Hub push `push_to_hub` already in notebook `§13`.
+
+---
 
 ## Conventions
 
-- Input modality checks are mandatory (format, band count, single/pair/bi-temporal) — every image entrypoint validates before calling a specialist. See `AGENTS.md`.
-- `ExecutionTrace` is a first-class output, not a debug log — controller must always populate and return it.
-- Specialist models are called via `backend/registry.py`, never imported directly in route handlers.
-- Config over hardcoding — paths and task→model maps live in `training/configs/` or `backend/config.py`.
-- Prefer LoRA/QLoRA over full fine-tuning (hackathon time/compute constraints).
-- Do not commit `.env`, checkpoints (`.bin/.safetensors`), adapters, or raw datasets — see `.gitignore`.
+- **Input validation mandatory** — every image entrypoint checks format/bands/single/pair; see `AGENTS.md`.
+- **ExecutionTrace first-class** — not a log; controller must always populate it.
+- **Registry-only imports** — routes/controller never `import backend.models.*` directly.
+- **Config over hardcoding** — paths/maps in `backend/config.py` / `training/configs/`.
+- **QLoRA only** (T4), adapters on Drive/Hub never in git (`.gitignore` covers `*.bin/*.safetensors/checkpoints/BigEarthNet/`).
+- **Do not** add generic VLM fallback, remove validation, or assume uninterrupted training.
+- PR: `Add change-VQA specialist wrapper` style, `docs/execution_trace_schema.md` if trace shape changes.
 
-## Notes
+See `AGENTS.md` for full workflow and `training/notebooks/satquery_ai_qlora_finetune.ipynb` for the T4-safe pattern.
 
-- `training/adapters/` and `training/notebooks/*.ipynb_checkpoints` are gitignored — adapters live on Drive/HF Hub.
-- `training/notebooks/` is no longer empty — `satquery_ai_qlora_finetune.ipynb` is the Stage 1 reference; later stages copy its structure (mount Drive → install deps → quantized base + adapter-to-continue → subset/cache → resume-aware `Trainer` → save adapter) per `AGENTS.md`.
-- Input modality checks and `ExecutionTrace` are mandatory graded outputs — see `AGENTS.md`.
