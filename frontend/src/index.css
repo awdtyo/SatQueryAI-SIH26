@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #26394D #0F1726;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #0F1726;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #26394D;
+    border-radius: 3px;
+  }
+
+  /* Body default text — bright + readable sans */
+  body {
+    color: #E6F0F7;
+    background: #0B1220;
+  }
+
+  ::selection {
+    background: rgba(50, 215, 255, 0.2);
+    color: #ffffff;
+  }
+
+  html, body, #root {
+    height: 100%;
+    overflow: hidden;
+  }
+}
+
+@layer components {
+  .panel {
+    @apply relative bg-surface-800 border border-surface-400/50 rounded-lg
+      shadow-panel;
+  }
+
+  .panel-header {
+    @apply flex items-center gap-2.5 px-4 py-3 border-b border-surface-400/30
+      bg-surface-750/60 rounded-t-lg;
+  }
+
+  .panel-label {
+    @apply text-[12px] font-semibold text-accent tracking-[0.08em] uppercase;
+  }
+
+  .panel-body {
+    @apply p-4;
+  }
+
+  .hud-panel {
+    @apply relative bg-surface-800 border border-surface-400/50 rounded-lg;
+  }
+
+  .hud-panel-soft {
+    @apply relative bg-surface-750/60 border border-surface-400/30 rounded-lg;
+  }
+
+  /* Subtle corner brackets — used sparingly only on the imagery viewer */
+  .corner-brackets::before,
+  .corner-brackets::after {
+    content: "";
+    @apply absolute w-3 h-3 pointer-events-none;
+  }
+  .corner-brackets::before {
+    @apply top-2 left-2 border-t border-l border-accent/30;
+  }
+  .corner-brackets::after {
+    @apply bottom-2 right-2 border-b border-r border-accent/30;
+  }
+
+  .scanlines::after {
+    content: "";
+    @apply absolute inset-0 pointer-events-none;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 3px,
+      rgba(50, 215, 255, 0.006) 3px,
+      rgba(50, 215, 255, 0.006) 4px
+    );
+  }
+
+  .confidence-high {
+    @apply text-signal-green;
+  }
+  .confidence-medium {
+    @apply text-signal-amber;
+  }
+  .confidence-low {
+    @apply text-signal-red;
+  }
+
+  .divider {
+    @apply border-t border-surface-400/25;
+  }
+
+  .tag {
+    @apply inline-flex items-center px-2 py-0.5 text-[10px] font-medium tracking-wider border rounded;
+  }
+
+  .tag-accent {
+    @apply tag text-accent border-accent/25 bg-accent/10;
+  }
+
+  .tag-muted {
+    @apply tag text-ink-muted border-surface-400/30 bg-surface-700/40;
+  }
+}
+
+@layer utilities {
+  .text-glow {
+    text-shadow: 0 0 8px rgba(50, 215, 255, 0.25);
+  }
+}
