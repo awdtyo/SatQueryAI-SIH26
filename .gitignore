@@ -14,13 +14,19 @@ build/
 venv/
 env/
 ENV/
+.conda/
+pip-log.txt
+pip-delete-this-directory.txt
+.python-version
+
+# Env & secrets — never commit (see AGENTS.md)
 .env
 .env.*
 !.env.example
-pip-log.txt
-pip-delete-this-directory.txt
+*.pem
+*.key
 
-# Model checkpoints / adapters — never commit weights (see AGENTS.md)
+# Model checkpoints / adapters — never commit weights (see AGENTS.md + README)
 training/adapters/*
 !training/adapters/.gitkeep
 *.bin
@@ -28,10 +34,15 @@ training/adapters/*
 *.ckpt
 *.pt
 *.pth
+*.onnx
 checkpoints/
 adapters/
+hf_cache/
+transformers_cache/
+.cache/huggingface/
+.huggingface/
 
-# Dataset caches / raw data — never commit
+# Dataset caches / raw data — never commit (BigEarthNet 70GB)
 data/raw/
 data/cache/
 data/*.tif
@@ -44,6 +55,14 @@ BigEarthNet/
 *.zip
 *.tar
 *.tar.gz
+*.sqlite
+*.db
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+.jupyter/
+*.ipynb_checkpoints
 
 # Node / frontend
 node_modules/
@@ -51,27 +70,55 @@ frontend/node_modules/
 frontend/dist/
 frontend/build/
 frontend/.next/
+frontend/.vite/
+frontend/.turbo/
+frontend/.vercel/
+frontend/.output/
+.npm/
+.pnp.*
+*.tsbuildinfo
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnp.*
-*.tsbuildinfo
+pnpm-debug.log*
 
-# OS / editor
+# Logs / runtime
+*.log
+logs/
+tmp/
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# OS / editor / IDE
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
 .idea/
 .vscode/
+.cursor/
+.windsurf/
 *.swp
 *.swo
 *~
 *.bak
 *.tmp
+*.orig
+.sass-cache/
 
-# Logs / misc
-*.log
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# Deployment / infra
+.vercel
+.netlify/
+.env.local
+.env.development.local
+.env.production.local
+
+# Misc
+.cache/
+parquet/
