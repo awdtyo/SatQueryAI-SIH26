@@ -1,0 +1,18 @@
+# SatQuery AI — backend dependencies only
+# See AGENTS.md: training-only deps (bitsandbytes, peft training utilities)
+# live in the Colab notebook environment, NOT here.
+
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.5.0
+pillow>=10.0.0
+rasterio>=1.3.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.23.0
+httpx>=0.25.0
+
+# Linting / type checking
+ruff>=0.1.0
+mypy>=1.0.0

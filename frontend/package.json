@@ -1,0 +1,14 @@
+{
+  "name": "satquery-ai-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "description": "SatQuery AI frontend — upload UI, query box, results + evidence panel (scaffold placeholder)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint ."
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
