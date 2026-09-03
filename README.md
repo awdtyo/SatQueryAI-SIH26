@@ -5,7 +5,7 @@
 
 An agentic controller validates the input modality (PIL + optional `rasterio` GeoTIFF band inspection), classifies the task, routes via a central registry to specialist vision-language models (VQA/captioning, grounding, change detection, optical-SAR fusion), and returns `{ answer, confidence, evidence, execution_trace }`. Stage-1 specialist is a **real QLoRA-fine-tuned Qwen2-VL-2B** on BigEarthNet Sentinel-2; Stage-2/3 configs + notebooks are scaffolded (see `training/`), remaining specialists are stubbed until adapters train.
 
-**Live demo:** Frontend `http://localhost:5173` ↔ Backend `http://localhost:8000` (FastAPI + Vite proxy). Adapter: [`imadityasarkar/satquery-qwen2vl-stage1-bigearthnet`](https://huggingface.co/imadityasarkar/satquery-qwen2vl-stage1-bigearthnet) (Qwen2-VL-2B-Instruct base + BigEarthNet QLoRA).
+**Live demo:** Local `http://localhost:5173` ↔ `http://localhost:8000` (FastAPI + Vite proxy) via `make pitch-demo` — or Docker `http://localhost:7860` (HF Spaces `app_port 7860`, see `docs/hf_spaces.md`). Adapter: [`imadityasarkar/satquery-qwen2vl-stage1-bigearthnet`](https://huggingface.co/imadityasarkar/satquery-qwen2vl-stage1-bigearthnet) (Qwen2-VL-2B-Instruct base + BigEarthNet QLoRA).
 
 ---
 
