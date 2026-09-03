@@ -23,11 +23,18 @@ function getModelStepIndex(modelCount: number, totalSteps: number): number[] {
 }
 
 function ModelRow({ model }: { model: ModelTraceEntry }) {
+  const isStub = model.is_stub ?? (model.is_real === false);
+  const badge = isStub ? "STUB" : model.is_real ? "REAL" : null;
   return (
     <div className="ml-6 pl-3 border-l border-accent/20 py-2">
       <div className="flex items-center gap-2.5">
-        <span className="text-[12px] font-medium text-accent">{model.name}</span>
+        <span className="text-[12px] font-medium text-accent truncate max-w-[150px]" title={model.name}>{model.name}</span>
         <span className="tag-muted">{model.role}</span>
+        {badge && (
+          <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium tracking-wider ${isStub ? "bg-signal-amber/15 text-signal-amber border border-signal-amber/20" : "bg-signal-green/15 text-signal-green border border-signal-green/20"}`}>
+            {badge}
+          </span>
+        )}
         <span className="ml-auto text-[11px] text-ink-muted tabular-nums">
           {model.latency_ms}ms
         </span>
