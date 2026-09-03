@@ -129,15 +129,5 @@ cd frontend && npm install && npm run dev  # http://localhost:5173
 **Both:** `make pitch-demo` starts backend (`:8000`) + frontend (`:5173`) with Vite proxy `/api → 8000`; health: `curl http://localhost:8000/health`.
 
 ---
-
-## Conventions
-
-- **Input validation mandatory** — every image entrypoint checks format/bands/single/pair; see `AGENTS.md`.
-- **ExecutionTrace first-class** — not a log; controller must always populate it.
-- **Registry-only imports** — routes/controller never `import backend.models.*` directly.
-- **Config over hardcoding** — paths/maps in `backend/config.py` / `training/configs/`.
-- **QLoRA only** (T4), adapters on Drive/Hub never in git (`.gitignore` covers `*.bin/*.safetensors/checkpoints/BigEarthNet/`).
-- **Do not** add generic VLM fallback, remove validation, or assume uninterrupted training.
-- PR: `Add change-VQA specialist wrapper` style, `docs/execution_trace_schema.md` if trace shape changes.
-
-See `AGENTS.md` for full workflow and `training/notebooks/satquery_ai_qlora_finetune.ipynb` for the T4-safe pattern.
+## Live Environment:
+**Environment Pipeline is live at:** https://huggingface.co/spaces/imadityasarkar/satquery-ai
