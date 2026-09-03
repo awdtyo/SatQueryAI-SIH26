@@ -15,20 +15,9 @@ On HF Spaces ZeroGPU:
 
 from __future__ import annotations
 
-import io
-import json
-import logging
-import os
-import time
-from pathlib import Path
-from typing import Any
-
-import gradio as gr
-from PIL import Image
-
-# ZeroGPU decorator is provided by HF Spaces runtime; do not pin `spaces` in requirements.txt
+# spaces must be imported before torch (backend) so ZeroGPU can patch CUDA
 try:
-    import spaces  # type: ignore
+    import spaces  # type: ignore  # pip: spaces — not in requirements.txt, provided by HF Gradio image
 except ImportError:  # local dev without spaces package — no-op decorator
     class _SpacesStub:
         def GPU(self, *args, **kwargs):  # type: ignore
@@ -42,6 +31,17 @@ except ImportError:  # local dev without spaces package — no-op decorator
 
     spaces = _SpacesStub()  # type: ignore
 
+import io
+import json
+import logging
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+import gradio as gr
+from PIL import Image
+
 from backend import config as app_config
 from backend.controller import handle as controller_handle
 from backend import registry
@@ -51,17 +51,38 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 
 # Keep backend's CPU flag for Docker, but ZeroGPU needs GPU — override via env at Space runtime
 # Space Variables should set SATQUERY_FORCE_CPU=0 (Docker local keeps 1 via Dockerfile:22)
+# Also auto-detect ZeroGPU via SPACES_ZERO_GPU env (HF sets on zero-a10g)
+if os.getenv("SPACES_ZERO_GPU") == "1":
+    # On ZeroGPU, force GPU unless user explicitly set SATQUERY_FORCE_CPU=1
+    if "SATQUERY_FORCE_CPU" not in os.environ:
+        os.environ["SATQUERY_FORCE_CPU"] = "0"
+        # Patch already-imported config and reset cached vqa load so next predict loads on real CUDA
+        try:
+            app_config.FORCE_CPU = False  # type: ignore
+            import backend.models.vqa as _vqa
+
+            _vqa._load_attempted = False  # type: ignore
+            _vqa._is_real = False  # type: ignore
+            _vqa._load_error = None  # type: ignore
+        except Exception:
+            pass
+
 if os.getenv("SATQUERY_FORCE_CPU", "1").lower() in ("0", "false", "off", "no", ""):
     logger.info("Gradio Space: SATQUERY_FORCE_CPU=0 — ZeroGPU CUDA enabled")
 else:
     logger.warning("Gradio Space: SATQUERY_FORCE_CPU still 1 — set Space Variable SATQUERY_FORCE_CPU=0 for ZeroGPU, else model stays on CPU")
 
-# Warm registry health at startup (triggers lazy load check, logs ✓ vqa (real) etc.)
-try:
-    h = registry.health()
-    logger.info("Gradio startup health: %s", json.dumps({k: v.get("is_real") for k, v in h.get("registry", {}).items()}))
-except Exception as e:
-    logger.warning("Gradio startup health failed: %s", e)
+# Warm registry health at startup — but NOT on ZeroGPU outside GPU worker (would cache CPU model)
+# On ZeroGPU, health outside GPU would load model on emulated CUDA and cache as CPU, breaking real GPU fork
+_is_zerogpu = os.getenv("SPACES_ZERO_GPU") == "1" or os.getenv("SATQUERY_FORCE_CPU", "1").lower() in ("0", "false", "off", "no", "")
+if not _is_zerogpu:
+    try:
+        h = registry.health()
+        logger.info("Gradio startup health: %s", json.dumps({k: v.get("is_real") for k, v in h.get("registry", {}).items()}))
+    except Exception as e:
+        logger.warning("Gradio startup health failed: %s", e)
+else:
+    logger.info("Gradio startup health: deferred (ZeroGPU — will load on first @spaces.GPU call)")
 
 
 def _pil_to_bytes(img: Image.Image, fmt: str = "PNG") -> bytes:
