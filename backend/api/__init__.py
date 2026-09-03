@@ -22,12 +22,19 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
 def health() -> dict:
+    # CPU-only mode surfaces explicitly so frontend can render CPU badge
+    from backend.models import vqa_specialist
+
+    vqa_info = vqa_specialist.get_model_info() if hasattr(vqa_specialist, "get_model_info") else {}
     return {
         "status": "ok",
         "specialists": registry.health(),
         "base_model": config.BASE_MODEL,
         "adapter_path": config.ADAPTER_PATH,
         "cuda_available": __import__("torch").cuda.is_available() if _has_torch() else False,
+        "force_cpu": bool(getattr(config, "FORCE_CPU", False)),
+        "compute": vqa_info.get("compute", "cpu-only" if getattr(config, "FORCE_CPU", False) else "cpu"),
+        "device": vqa_info.get("device", "cpu"),
     }
 
 
