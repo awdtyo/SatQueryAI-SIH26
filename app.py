@@ -285,16 +285,29 @@ with gr.Blocks(
             health = gr.JSON(label="Health (live, from registry.health)", value={})
             refresh_health = gr.Button("Refresh health", size="sm")
 
-    # Health helper (no GPU needed, not decorated)
-    def _health() -> dict[str, Any]:
+    # Health helper — prefilled placeholder at startup (no GPU, no model load)
+    # Real health (with model load) is on-demand via Refresh button inside ZeroGPU
+    _health_prefilled: dict[str, Any] = {
+        "status": "Space ready — click Refresh health or run a query",
+        "compute": "zero-a10g (SATQUERY_FORCE_CPU=0)",
+        "note": "Health with model load is on-demand to avoid No CUDA at startup",
+        "specialists": {"vqa (real)": {"is_real": "pending — run a query or Refresh health"}},
+    }
+
+    @spaces.GPU(duration=15)
+    def _health_gpu() -> dict[str, Any]:
         try:
             return registry.health()
         except Exception as e:
             return {"error": str(e)}
 
-    refresh_health.click(fn=_health, outputs=[health])
-    # Initial health load
-    demo.load(fn=_health, outputs=[health])
+    def _health_placeholder() -> dict[str, Any]:
+        # No GPU, no model load — safe at startup
+        return _health_prefilled
+
+    refresh_health.click(fn=_health_gpu, outputs=[health])
+    # Initial health load — prefilled, no GPU quota cost
+    demo.load(fn=_health_placeholder, outputs=[health])
 
     # Wire predict
     run_btn.click(
