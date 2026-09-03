@@ -63,8 +63,8 @@ flowchart TD
     CHG --> G
     FUS --> G
     G --> E[Merge + Evidence<br/>image_ref / bbox / heatmap]
-    E --> TR[ExecutionTrace<br/>task, models_used[],<br/>parameters, confidence,<br/>evidence_refs, total_latency_ms]
-    TR --> RESP[{answer, confidence,<br/>evidence[], execution_trace}]
+    E --> TR[ExecutionTrace<br/>task, models_used,<br/>parameters, confidence,<br/>evidence_refs, total_latency_ms]
+    TR --> RESP[{answer, confidence,<br/>evidence, execution_trace}]
     RESP --> FE2[Frontend<br/>ResultsPanel +<br/>ExecutionTrace +<br/>ConfidenceGauge]
 ```
 
