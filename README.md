@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/banner.png" alt="SatQuery AI" width="1000" />
+<img src="assets/banner2.png" alt="SatQuery AI" width="1000" />
 
 [![OpenEnv](https://img.shields.io/badge/SIH-2026-blue?style=flat-square)](https://www.sih.gov.in/)
 [![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace%20Spaces-yellow?style=flat-square)](https://huggingface.co/spaces/imadityasarkar/satquery-ai)
