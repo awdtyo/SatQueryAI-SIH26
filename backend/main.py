@@ -28,6 +28,10 @@ async def lifespan(app: FastAPI):
     logger.info("  BASE_MODEL   = %s", config.BASE_MODEL)
     logger.info("  ADAPTER_PATH = %s", config.ADAPTER_PATH)
     logger.info("  (override via SATQUERY_BASE_MODEL / SATQUERY_ADAPTER_PATH)")
+    if getattr(config, "FORCE_CPU", False):
+        logger.info("  COMPUTE      = CPU-ONLY (SATQUERY_FORCE_CPU=1 — GPU/4-bit disabled)")
+    else:
+        logger.info("  COMPUTE      = auto (GPU if available, else CPU)")
 
     try:
         health = registry.health()

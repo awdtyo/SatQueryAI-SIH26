@@ -9,8 +9,18 @@ function useUtcClock() {
   return time.toISOString().slice(0, 19).replace("T", " ") + " UTC";
 }
 
-export default function Header() {
+type HealthProp = {
+  status?: string;
+  compute?: string;
+  device?: string;
+  force_cpu?: boolean;
+} | null;
+
+export default function Header({ health }: { health?: HealthProp }) {
   const utcTime = useUtcClock();
+  const isCpuOnly = health?.force_cpu ?? true; // default to CPU-only per backend config
+  const computeLabel = isCpuOnly ? "CPU-ONLY" : (health?.compute?.toUpperCase() ?? "CPU");
+  const deviceLabel = health?.device ?? "cpu";
 
   return (
     <header className="h-[56px] flex-shrink-0 border-b border-surface-400/40 bg-surface-800/90 flex items-center px-5 gap-6">
@@ -51,8 +61,14 @@ export default function Header() {
         </div>
       </div>
 
-      {/* Online status */}
-      <div className="flex items-center gap-2">
+      {/* CPU-specific health badge + online status */}
+      <div className="flex items-center gap-3">
+        <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded border border-accent/25 bg-accent/10 text-[10px] font-medium tracking-wider text-accent">
+          <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+          {computeLabel}
+          <span className="text-accent/60 font-mono">·</span>
+          <span className="font-mono text-accent/80">{deviceLabel}</span>
+        </span>
         <span className="w-2 h-2 rounded-full bg-signal-green" />
         <span className="text-[11px] font-medium text-ink-secondary">System Online</span>
       </div>

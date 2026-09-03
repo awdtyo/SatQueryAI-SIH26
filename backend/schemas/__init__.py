@@ -63,6 +63,9 @@ class HealthResponse(BaseModel):
     base_model: str
     adapter_path: str
     cuda_available: bool
+    force_cpu: bool = False
+    compute: str = "cpu"
+    device: str = "cpu"
 
 
 __all__ = [

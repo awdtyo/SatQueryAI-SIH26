@@ -1,6 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { InputMode, QueryResponse, UploadedImage, AppError } from "./types/api";
-import { submitQuery } from "./api/mockClient";
+import { submitQuery, checkHealth } from "./api/mockClient";
 import Header from "./components/Header";
 import ImageUploader from "./components/ImageUploader";
 import ImageryViewer from "./components/ImageryViewer";
@@ -10,6 +10,15 @@ import ExecutionTracePanel from "./components/ExecutionTrace";
 import ConfidenceGauge from "./components/ConfidenceGauge";
 import LoadingOverlay from "./components/LoadingOverlay";
 
+type HealthState = {
+  status: string;
+  compute?: string;
+  device?: string;
+  force_cpu?: boolean;
+  adapter_path?: string;
+  specialists?: Record<string, unknown>;
+} | null;
+
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [inputMode, setInputMode] = useState<InputMode>("single");
@@ -17,6 +26,26 @@ export default function App() {
   const [response, setResponse] = useState<QueryResponse | null>(null);
   const [error, setError] = useState<AppError | null>(null);
   const [queryHistory, setQueryHistory] = useState<string[]>([]);
+  const [health, setHealth] = useState<HealthState>(null);
+
+  // Poll backend health for CPU badge + system status
+  useEffect(() => {
+    let cancelled = false;
+    const fetchHealth = async () => {
+      try {
+        const h = await checkHealth();
+        if (!cancelled) setHealth(h as HealthState);
+      } catch {
+        if (!cancelled) setHealth({ status: "offline" });
+      }
+    };
+    fetchHealth();
+    const id = setInterval(fetchHealth, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const handleSubmit = useCallback(
     async (query: string) => {
@@ -51,7 +80,7 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 overflow-hidden">
-      <Header />
+      <Header health={health} />
 
       {/* Error banner — inline below header */}
       {error && (
@@ -152,22 +181,34 @@ export default function App() {
             </section>
           )}
 
-          {/* System status — compact + secondary */}
-          <section className="panel flex-1 min-h-0 flex flex-col">
-            <div className="panel-header">
-              <span className="panel-label">System Status</span>
-            </div>
-            <div className="panel-body flex-1 overflow-y-auto">
-              <div className="space-y-2.5">
-                <StatusRow label="Controller" status="online" />
-                <StatusRow label="VQA Module" status="online" />
-                <StatusRow label="Change Detection" status="online" />
-                <StatusRow label="Grounding Engine" status="online" />
-                <StatusRow label="SAR Fusion" status="standby" />
-                <StatusRow label="GPU / T4" status="online" />
-              </div>
-            </div>
-          </section>
+          {/* System status — CPU-only badge driven by backend health */}
+           <section className="panel flex-1 min-h-0 flex flex-col">
+             <div className="panel-header">
+               <span className="panel-label">System Status</span>
+               <span className="ml-auto tag-muted flex items-center gap-1.5">
+                 <span className={`w-1.5 h-1.5 rounded-full ${health?.status === "offline" ? "bg-signal-red" : "bg-signal-green"}`} />
+                 {health?.force_cpu ? "CPU-ONLY" : health?.compute?.toUpperCase() ?? "CPU"}
+               </span>
+             </div>
+             <div className="panel-body flex-1 overflow-y-auto">
+               <div className="space-y-2.5">
+                 <StatusRow label="Controller" status={health?.status === "offline" ? "error" : "online"} />
+                 <StatusRow
+                   label="VQA Module"
+                   status={health?.status === "offline" ? "error" : "online"}
+                   detail={health?.adapter_path ? health.adapter_path.split("/").pop() : undefined}
+                 />
+                 <StatusRow label="Change Detection" status="online" />
+                 <StatusRow label="Grounding Engine" status="online" />
+                 <StatusRow label="SAR Fusion" status="standby" />
+                 <StatusRow
+                   label={health?.force_cpu ? "Compute · CPU-ONLY" : "Compute"}
+                   status={health?.status === "offline" ? "error" : "online"}
+                   detail={health?.device ?? (health?.force_cpu ? "cpu" : "auto")}
+                 />
+               </div>
+             </div>
+           </section>
         </div>
       </div>
 

@@ -87,19 +87,35 @@ def _load_model() -> bool:
                 base_id, trust_remote_code=True, token=hf_token
             )
 
-        # Determine quantization strategy
-        has_cuda = bool(torch is not None and torch.cuda.is_available())
+        # Determine quantization strategy — CPU-only if FORCE_CPU
+        raw_has_cuda = bool(torch is not None and torch.cuda.is_available())
+        if app_config.FORCE_CPU and raw_has_cuda:
+            logger.info("VQA: FORCE_CPU=1 — ignoring available CUDA, running on CPU only")
+            has_cuda = False
+        else:
+            has_cuda = raw_has_cuda
         has_bnb = True
         try:
             import bitsandbytes  # noqa: F401
         except Exception:
             has_bnb = False
+        # FORCE_CPU also disables 4-bit even if bitsandbytes present
+        if app_config.FORCE_CPU:
+            has_bnb = False
 
+        # CPU-only: force device_map to cpu to avoid offload_dir dispatch error
+        if app_config.FORCE_CPU:
+            device_map_value: Any = "cpu"
+        else:
+            device_map_value = "auto"
         model_kwargs: dict[str, Any] = {
             "trust_remote_code": True,
-            "device_map": "auto",
+            "device_map": device_map_value,
             "token": hf_token,
         }
+        # Helpful for large CPU load — allow low-mem and offload to /tmp if still needed
+        if app_config.FORCE_CPU:
+            model_kwargs["low_cpu_mem_usage"] = True
 
         if has_cuda and has_bnb:
             compute_dtype = _get_compute_dtype()
@@ -120,8 +136,16 @@ def _load_model() -> bool:
         base_model = Qwen2VLForConditionalGeneration.from_pretrained(base_id, **model_kwargs)
 
         # Attach LoRA adapter — works for Hub id or local path transparently
+        # CPU-only large model needs offload folder for accelerate dispatch (15GB RAM tight for 2B)
         try:
-            _model = PeftModel.from_pretrained(base_model, adapter_id, token=hf_token)
+            import tempfile, os
+
+            offload_kwargs = {}
+            if app_config.FORCE_CPU:
+                tmp_offload = "/tmp/satquery_offload"
+                os.makedirs(tmp_offload, exist_ok=True)
+                offload_kwargs = {"offload_folder": tmp_offload}
+            _model = PeftModel.from_pretrained(base_model, adapter_id, token=hf_token, **offload_kwargs)
             # Merge is optional for inference; keep adapter separate for clarity
             _is_real = True
             logger.info("VQA: adapter loaded successfully from %s", adapter_id)
@@ -140,14 +164,21 @@ def _load_model() -> bool:
         _model.eval()
         _is_real = True
         _load_error = None
-        if has_cuda and torch is not None:
+        # Restrict tensors to CPU if forced — avoids accidental CUDA placement via device_map auto
+        if app_config.FORCE_CPU:
+            try:
+                _model = _model.to("cpu")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        if has_cuda and torch is not None and not app_config.FORCE_CPU:
             logger.info(
                 "VQA specialist READY — GPU=%s mem=%.1fGB",
                 torch.cuda.get_device_name(0),
                 torch.cuda.memory_allocated() / 1024**3,
             )
         else:
-            logger.info("VQA specialist READY — CPU mode (no CUDA)")
+            mode = "CPU-ONLY (forced)" if app_config.FORCE_CPU else "CPU mode (no CUDA)"
+            logger.info("VQA specialist READY — %s", mode)
         return True
 
     except Exception as e:
@@ -350,6 +381,10 @@ def get_model_info() -> dict[str, Any]:
         device = str(next(_model.parameters()).device) if _model is not None and hasattr(_model, "parameters") else "unloaded"
     except Exception:
         device = "unloaded"
+    # Surface forced CPU so health badge can render correctly
+    if app_config.FORCE_CPU:
+        device = "cpu"
+        has_cuda = False
     return {
         "base_model": app_config.BASE_MODEL,
         "adapter_path": app_config.ADAPTER_PATH,
@@ -357,6 +392,8 @@ def get_model_info() -> dict[str, Any]:
         "load_error": _load_error,
         "device": device,
         "has_cuda": has_cuda,
+        "force_cpu": app_config.FORCE_CPU,
+        "compute": "cpu-only" if app_config.FORCE_CPU else ("cuda" if has_cuda else "cpu"),
     }
 
 

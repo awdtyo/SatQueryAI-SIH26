@@ -29,6 +29,12 @@ ADAPTER_PATH: str = os.getenv(
 # Optional HF token for gated/private repos (empty = anonymous).
 HF_TOKEN: str | None = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 
+# --- Device ---
+# CPU-only mode — forced per user request. Even if CUDA is available, the
+# backend will not use GPU / BitsAndBytes 4-bit. Set SATQUERY_FORCE_CPU=0
+# to re-enable GPU/4-bit (requires CUDA + bitsandbytes).
+FORCE_CPU: bool = os.getenv("SATQUERY_FORCE_CPU", "1").lower() not in ("0", "false", "off", "no", "")
+
 # --- Inference knobs (config over hardcoding) ---
 # Processor dynamic resolution caps — same values as training notebook
 # (512*28*28 max, 256*28*28 min) to keep VRAM flat on T4.
