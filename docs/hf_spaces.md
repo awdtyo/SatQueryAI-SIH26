@@ -1,4 +1,6 @@
-# HF Spaces — Docker Deployment (SatQuery AI)
+# HF Spaces — Docker Deployment (SatQuery AI) — Local CPU path
+
+> **Hybrid repo:** This doc is **Docker local CPU** (`CPU basic 16GB`, `SATQUERY_FORCE_CPU=1`, `make pitch-demo`, `docker build -t satquery-ai:local .`). For **HF Spaces ZeroGPU (Blackwell + Gradio)** see `docs/hf_spaces_gradio.md` (`app.py`, `sdk: gradio`, `hardware: zero-a10g`, `SATQUERY_FORCE_CPU=0`, `@spaces.GPU`).
 
 **Image:** CPU-only (`SATQUERY_FORCE_CPU=1`), `Qwen/Qwen2-VL-2B-Instruct` + `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (~4GB cold pull, cached in `/tmp/hf_cache`). Frontend `frontend/dist` is baked into the image via multi-stage `Dockerfile:6` and served by `backend/main.py:96` at `/`.
 
