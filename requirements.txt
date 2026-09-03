@@ -17,6 +17,12 @@ peft>=0.14.0
 bitsandbytes>=0.45.5
 qwen-vl-utils>=0.0.10
 accelerate>=1.4.0  # required by transformers/peft device_map
+torchvision>=0.18  # required for Qwen2VL processor (video processor fallback, CPU)
+
+# Gradio + ZeroGPU (HF Spaces) — kept alongside FastAPI for hybrid:
+# Docker local (CPU-only) uses FastAPI (above); HF Spaces ZeroGPU uses Gradio app.py
+# Do NOT pin `spaces` — HF Spaces provides it in Gradio base image
+gradio>=4.0
 
 # Tests / lint (keep lightweight for CI)
 pytest>=8.0
