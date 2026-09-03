@@ -50,8 +50,9 @@ def validate_inputs(images: list[Any], input_mode: str) -> list[Image.Image]:
     """Validate modality contract: format, count, mode consistency.
 
     Returns list[PIL.Image] (converted to RGB) or raises HTTPException(400/422).
-    Band-count checks are best-effort via PIL mode/layers; full GeoTIFF
-    band inspection requires rasterio (not mandatory for PNG/JPEG benchmarks).
+    Band-count checks are best-effort via PIL mode/layers; when rasterio is
+    installed and the input is GeoTIFF/TIFF, the true band count (dataset.count)
+    is inspected via MemoryFile and logged/reported.
     """
     if input_mode not in _ALLOWED_MODES:
         raise HTTPException(
@@ -104,9 +105,11 @@ def validate_inputs(images: list[Any], input_mode: str) -> list[Image.Image]:
             )
 
         # Load to PIL to validate it's actually an image and to get mode/bands
+        raw_bytes: bytes | None = None
         try:
             if isinstance(data, (bytes, bytearray)):
-                pil = Image.open(io.BytesIO(data))
+                raw_bytes = bytes(data)
+                pil = Image.open(io.BytesIO(raw_bytes))
             elif hasattr(data, "read"):
                 # UploadFile — read bytes (may have been read already)
                 # Try to seek to start if possible
@@ -117,7 +120,8 @@ def validate_inputs(images: list[Any], input_mode: str) -> list[Image.Image]:
                 raw = data.read()  # type: ignore
                 if isinstance(raw, str):
                     raw = raw.encode()
-                pil = Image.open(io.BytesIO(raw))
+                raw_bytes = bytes(raw) if isinstance(raw, (bytes, bytearray)) else None
+                pil = Image.open(io.BytesIO(raw_bytes) if raw_bytes is not None else io.BytesIO(b""))
                 # Restore for later use — caller may need fresh bytes
                 try:
                     data.seek(0)  # type: ignore
@@ -135,7 +139,34 @@ def validate_inputs(images: list[Any], input_mode: str) -> list[Image.Image]:
             pil_images.append(pil_rgb)
 
             # Band-count / mode logging (not rejecting, just validating)
-            band_info = f"mode={pil.mode} size={pil.size}"
+            # For GeoTIFF/TIFF, prefer rasterio's true band count when available
+            rasterio_band_info: str | None = None
+            if ext in (".tif", ".tiff") and raw_bytes is not None:
+                try:
+                    import rasterio  # type: ignore
+                    from rasterio.io import MemoryFile  # type: ignore
+
+                    with MemoryFile(raw_bytes) as mem:
+                        with mem.open() as ds:
+                            rasterio_band_info = (
+                                f"rasterio bands={ds.count} dtype={ds.dtypes[0] if ds.dtypes else 'unknown'} "
+                                f"size={ds.width}x{ds.height} crs={ds.crs}"
+                            )
+                            # Basic sanity: reject empty or absurd band counts
+                            if ds.count == 0:
+                                raise HTTPException(
+                                    status_code=422,
+                                    detail=f"Image {idx} ({filename}) has 0 bands — not a valid GeoTIFF",
+                                )
+                except HTTPException:
+                    raise
+                except ImportError:
+                    logger.debug("rasterio not installed — skipping GeoTIFF band validation for image %d", idx)
+                except Exception as e:
+                    # rasterio failed to open (e.g. PNG mislabeled as .tif) — fall back to PIL info
+                    logger.debug("rasterio open failed for image %d (%s): %s", idx, filename, e)
+
+            band_info = rasterio_band_info or f"mode={pil.mode} size={pil.size}"
             logger.debug("Image %d (%s): %s", idx, filename or "unnamed", band_info)
 
         except HTTPException:

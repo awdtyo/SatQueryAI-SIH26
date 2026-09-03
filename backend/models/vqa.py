@@ -18,6 +18,7 @@ loading would be unusably slow and OOM under load.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any
@@ -257,8 +258,9 @@ def predict(
 
     Returns: {"answer": str, "evidence": list[dict], "confidence": float}
 
-    Evidence is minimal for stage 1 (echoes input). Confidence is a placeholder
-    heuristic until the model natively exposes log-probs — see TODO below.
+    Evidence is minimal for stage 1 (echoes input). Confidence is derived from
+    length-normalized log-probs when the model exposes scores, otherwise falls
+    back to a heuristic.
 
     This function is thread-safe for concurrent FastAPI requests because the
     underlying model is read-only after load (no gradient). GPU memory is shared.
@@ -303,34 +305,112 @@ def predict(
             if isinstance(v, torch.Tensor):
                 inputs[k] = v.to(model_device)
 
-        # Generate
+        # Generate — request scores for logprob-based confidence when available
         with torch.no_grad():
             # Qwen2-VL may need image_grid_thw handling — processor already sets it
-            gen_ids = _model.generate(
-                **inputs,
-                max_new_tokens=_MAX_NEW_TOKENS,
-                do_sample=False,
-                temperature=0.0,
-                top_p=None,
-            )
-            # Trim prompt
-            input_len = inputs["input_ids"].shape[1]
-            gen_trimmed = gen_ids[0][input_len:]
+            input_len = int(inputs["input_ids"].shape[1])
+            scores = None
+            gen_ids = None
+            # Try to get scores; fall back to plain generate for mocked tests / old transformers
+            try:
+                outputs = _model.generate(
+                    **inputs,
+                    max_new_tokens=_MAX_NEW_TOKENS,
+                    do_sample=False,
+                    temperature=0.0,
+                    top_p=None,
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                )
+                # HuggingFace GenerateOutput has .sequences and .scores
+                if hasattr(outputs, "sequences"):
+                    gen_ids = outputs.sequences
+                    scores = getattr(outputs, "scores", None)
+                elif isinstance(outputs, tuple) and len(outputs) == 2:
+                    gen_ids, scores = outputs  # type: ignore
+                else:
+                    gen_ids = outputs  # type: ignore
+            except TypeError:
+                # Older transformers or mocked generate that doesn't accept those kwargs
+                gen_ids = _model.generate(
+                    **inputs,
+                    max_new_tokens=_MAX_NEW_TOKENS,
+                    do_sample=False,
+                    temperature=0.0,
+                    top_p=None,
+                )
+                scores = None
+            # Normalize gen_ids to tensor-like with shape [batch, seq_len]
+            if gen_ids is None:
+                raise RuntimeError("VQA generate returned no ids")
+            # Trim prompt — handle both torch.Tensor and mocked _SimpleTensor
+            try:
+                seq_len = int(gen_ids.shape[1])  # type: ignore
+            except Exception:
+                seq_len = len(gen_ids[0]) if hasattr(gen_ids, "__getitem__") else 0  # type: ignore
+            # Slice generated tokens
+            try:
+                gen_trimmed = gen_ids[0][input_len:]  # type: ignore
+            except Exception:
+                # Fallback for unexpected tensor types
+                gen_trimmed = gen_ids[0][input_len:]  # type: ignore
             answer = _processor.decode(gen_trimmed, skip_special_tokens=True).strip()
 
             if not answer:
                 answer = "(no answer generated)"
                 confidence = 0.3
             else:
-                # TODO: replace with real log-prob based confidence when model exposes scores.
-                # For now, length-normalized heuristic + placeholder.
-                # Longer, non-generic answers get slightly higher score.
-                base = 0.72
-                if len(answer.split()) > 12:
-                    base += 0.08
-                if "I cannot" in answer or "sorry" in answer.lower():
-                    base = 0.35
-                confidence = min(0.95, max(0.1, base))
+                confidence = None
+                # Logprob-based confidence when scores are available
+                if scores is not None:
+                    try:
+                        import torch.nn.functional as F  # type: ignore
+
+                        log_probs: list[float] = []
+                        # scores is tuple of [batch, vocab] per generated token
+                        for idx, logit in enumerate(scores):  # type: ignore
+                            if not hasattr(logit, "shape"):
+                                continue
+                            # log_softmax over vocab
+                            try:
+                                lp_dist = F.log_softmax(logit, dim=-1)  # type: ignore
+                            except Exception:
+                                continue
+                            # token id for this step
+                            try:
+                                tok_tensor = gen_ids[0][input_len + idx]  # type: ignore
+                                # tok_tensor may be int or 0-d tensor
+                                tok = int(tok_tensor.item()) if hasattr(tok_tensor, "item") else int(tok_tensor)  # type: ignore
+                            except Exception:
+                                continue
+                            try:
+                                # lp_dist shape [batch, vocab] or [vocab]
+                                if hasattr(lp_dist, "dim") and lp_dist.dim() == 2:  # type: ignore
+                                    lp = float(lp_dist[0, tok].item())  # type: ignore
+                                else:
+                                    lp = float(lp_dist[tok].item())  # type: ignore
+                                log_probs.append(lp)
+                            except Exception:
+                                continue
+                        if log_probs:
+                            mean_lp = sum(log_probs) / len(log_probs)
+                            base_prob = math.exp(mean_lp)  # geometric mean prob in (0,1]
+                            # Map to calibrated confidence: 0.35 + 0.6*prob, with apology penalty
+                            conf = 0.35 + 0.6 * float(base_prob)
+                            if "I cannot" in answer or "sorry" in answer.lower():
+                                conf = min(conf, 0.35)
+                            confidence = max(0.1, min(0.95, conf))
+                    except Exception as e:
+                        logger.debug("Logprob confidence failed, falling back to heuristic: %s", e)
+                        confidence = None
+                if confidence is None:
+                    # Heuristic fallback (covers mocked tests where scores is None)
+                    base = 0.72
+                    if len(answer.split()) > 12:
+                        base += 0.08
+                    if "I cannot" in answer or "sorry" in answer.lower():
+                        base = 0.35
+                    confidence = min(0.95, max(0.1, base))
 
     except Exception as e:
         logger.error("VQA predict failed (query=%r): %s", query[:80], e, exc_info=True)
