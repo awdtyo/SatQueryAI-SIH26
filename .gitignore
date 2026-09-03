@@ -122,3 +122,6 @@ Desktop.ini
 # Misc
 .cache/
 parquet/
+
+# Local-only — keep AGENTS.md on laptop, not on GitHub
+AGENTS.md
