@@ -48,7 +48,7 @@ app_file: app.py
 python_version: "3.12"
 hardware: zero-a10g
 startup_duration_timeout: 30m
-short_description: Agentic VLM for satellite imagery — VQA, grounding, change detection
+short_description: Agentic VLM for satellite VQA, grounding and change
 license: mit
 pinned: false
 ---

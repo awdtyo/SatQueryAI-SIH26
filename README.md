@@ -10,7 +10,7 @@ app_file: app.py
 pinned: false
 hardware: zero-a10g
 startup_duration_timeout: 30m
-short_description: Agentic VLM for satellite imagery — VQA, grounding, change detection
+short_description: Agentic VLM for satellite VQA, grounding and change
 license: mit
 ---
 # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
