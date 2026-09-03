@@ -52,7 +52,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 license: mit
-short_description: Agentic VLM for satellite imagery — VQA, grounding, change detection
+short_description: Agentic VLM for satellite VQA, grounding and change
 ---
 ```
 
