@@ -35,11 +35,13 @@ export interface ModelTraceEntry {
   role: string;
   parameters: Record<string, string | number | boolean>;
   latency_ms: number;
+  is_real?: boolean;
+  is_stub?: boolean;
 }
 
-/** Reference to evidence (bbox, overlay, etc.) */
+/** Reference to evidence (bbox, overlay, etc.) — mirrors backend/schemas EvidenceRef */
 export interface EvidenceRef {
-  type: "bounding_box" | "overlay" | "heatmap" | "saliency";
+  type: "bounding_box" | "overlay" | "heatmap" | "saliency" | "image_ref";
   description: string;
   coordinates?: number[][];
   image_index?: number;

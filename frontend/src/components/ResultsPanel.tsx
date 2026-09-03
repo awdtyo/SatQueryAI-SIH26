@@ -10,6 +10,7 @@ function EvidenceBadge({ evidence }: { evidence: EvidenceRef }) {
     overlay: "\u25C8",
     heatmap: "\u25A3",
     saliency: "\u25CE",
+    image_ref: "\u25A3",
   };
 
   return (
