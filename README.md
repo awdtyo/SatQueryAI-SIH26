@@ -34,47 +34,17 @@ An agentic controller validates the input modality (PIL + optional `rasterio` Ge
 
 ## How It Works — Pipeline Flowchart
 
-### Inference (query + imagery)
-
 ```mermaid
 flowchart TD
-    U[User: query + 1-2 images<br/>single / optical-sar / bi-temporal<br/>GeoTIFF/TIFF/PNG/JPEG] --> FE[Frontend 5173<br/>ImageUploader + QueryInput<br/>fetch /api/query FormData]
-    FE -->|POST /api/query<br/>query, input_mode, images| API[FastAPI 8000<br/>backend/api]
-    API --> C[Controller<br/>backend/controller]
-    C --> V{validate_inputs<br/>format, band count,<br/>single/pair config}
-    V -->|422 on mismatch| ERR[HTTP 422]
-    V --> T[classify_task<br/>heuristic: change/grounding<br/>/fusion → VQA default]
-    T --> R[Registry<br/>backend/registry]
-    R -->|task → model| M{Specialist}
-    M -->|vqa/captioning| VQA[Qwen2-VL-2B<br/>+ BigEarthNet QLoRA<br/>singleton, 4-bit NF4<br/>backend/models/vqa.py]
-    M -->|grounding| GND[Grounding (VRSBench)]
-    M -->|change| CHG[Change Detection (CDVQA)]
-    M -->|fusion| FUS[Optical-SAR Fusion]
-    VQA --> G[Generate<br/>max_new_tokens 256<br/>apply_chat_template]
-    GND --> G
-    CHG --> G
-    FUS --> G
-    G --> E[Merge + Evidence<br/>image_ref / bbox / heatmap]
-    E --> TR[ExecutionTrace<br/>task, models_used,<br/>parameters, confidence,<br/>evidence_refs, total_latency_ms]
-    TR --> RESP[{answer, confidence,<br/>evidence, execution_trace}]
-    RESP --> FE2[Frontend<br/>ResultsPanel +<br/>ExecutionTrace +<br/>ConfidenceGauge]
+    A[User Input<br/>Natural Language Query +<br/>1-2 Satellite Images] --> B[Frontend<br/>Intelligence Console]
+    B --> C[Agentic Controller<br/>Validation + Task Routing]
+    C --> D[Specialist Models<br/>Qwen2-VL-2B + QLoRA]
+    D --> E[Evidence + Answer<br/>Confidence Scoring]
+    E --> F[Execution Trace<br/>Graded Output]
+    F --> G[Frontend Display<br/>Results + Viewer]
 ```
 
 **ExecutionTrace is graded** — every response includes `task`, `models_used[{name, role, parameters, latency_ms, is_real, is_stub}]`, `evidence_refs`, `total_latency_ms` (`frontend/src/types/api.ts` ↔ `backend/schemas`).
-
-### Training (Colab T4)
-
-```mermaid
-flowchart TD
-    BE[BigEarthNet 70GB<br/>Sentinel-2] --> SUB[Subset 800<br/>train/test split 95/5<br/>cached to Drive<br/>DATASET_CACHE_DIR]
-    SUB --> TOK[Processor<br/>Qwen2-VL AutoProcessor<br/>min 256*28*28 max 512*28*28<br/>apply_chat_template<br/>prompt-masked labels]
-    TOK --> QL[QLoRA<br/>BitsAndBytes NF4<br/>double_quant fp16<br/>LoRA r16 α32<br/>target q/k/v/o + gate/up/down]
-    QL --> TRN[Trainer<br/>batch 1 × accum 8<br/>paged_adamw_8bit fp16<br/>grad_checkpointing<br/>save_steps 25<br/>auto-resume latest checkpoint]
-    TRN --> CKPT[Drive<br/>CHECKPOINT_DIR/checkpoint-*]
-    CKPT --> ADP[Adapter<br/>final_adapter ~30-80MB<br/>+ DRIVE_PATH.txt]
-    ADP --> HUB[HF Hub<br/>imadityasarkar/...]
-    HUB --> CFG[backend/config.py<br/>ADAPTER_PATH<br/>backend/models/vqa<br/>singleton load]
-```
 
 ---
 
