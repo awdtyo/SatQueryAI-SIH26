@@ -1,3 +1,18 @@
+---
+title: SatQuery AI
+emoji: 🛰️
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: 6.26.0
+python_version: '3.12'
+app_file: app.py
+pinned: false
+hardware: zero-a10g
+startup_duration_timeout: 30m
+short_description: Agentic VLM for satellite imagery — VQA, grounding, change detection
+license: mit
+---
 # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
 
 > **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical/multispectral, SAR) with evidence-grounded answers and a full execution trace.
@@ -370,4 +385,3 @@ Tests mock `backend.models.vqa` singletons and `registry.predict` to assert `pre
 - PR: `Add change-VQA specialist wrapper` style, `docs/execution_trace_schema.md` if trace shape changes.
 
 See `AGENTS.md` for full workflow and `training/notebooks/satquery_ai_qlora_finetune.ipynb` for the T4-safe pattern.
-
