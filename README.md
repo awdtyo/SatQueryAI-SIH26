@@ -322,16 +322,14 @@ SATQUERY_MAX_NEW_TOKENS=256
 
 ---
 
-## Conventions
+## Research References
 
-- **Input validation mandatory** — every image entrypoint checks format/bands/single/pair; see `AGENTS.md`.
-- **ExecutionTrace first-class** — not a log; controller must always populate it.
-- **Registry-only imports** — routes/controller never `import backend.models.*` directly.
-- **Config over hardcoding** — paths/maps in `backend/config.py` / `training/configs/`.
-- **QLoRA only** (T4), adapters on Drive/Hub never in git (`.gitignore` covers `*.bin/*.safetensors/checkpoints/`).
-- **Do not** add generic VLM fallback, remove validation, or assume uninterrupted training.
-
-See `AGENTS.md` for full workflow and `training/notebooks/satquery_ai_qlora_finetune.ipynb` for the T4-safe pattern.
+- **Qwen2-VL** — Wang et al., *Qwen2-VL: Enhancing Vision-Language Model's Perception of the World at Any Resolution*, 2024. Base `Qwen/Qwen2-VL-2B-Instruct` (`Qwen2VLForConditionalGeneration`) — dynamic resolution, `AutoProcessor` with `min/max_pixels`.
+- **LoRA / QLoRA** — Hu et al., *LoRA: Low-Rank Adaptation of Large Language Models*, 2021; Dettmers et al., *QLoRA: Efficient Finetuning of Quantized LLMs*, 2023. `r=16 α=32` NF4 4-bit + double quant via `BitsAndBytesConfig` + `peft` on T4.
+- **BigEarthNet** — Sumbul et al., *BigEarthNet: A Large-Scale Benchmark Archive for Remote Sensing Image Understanding*, 2019. Sentinel-2 `120×120` chips, 19 land-cover labels — source for Stage-1 `800` S2 subset.
+- **RSVQA / VRSBench** — Lobry et al., *RSVQA: Visual Question Answering for Remote Sensing Data*, 2020; Li et al., *VRSBench: A Versatile Benchmark for Vision-Language Models in Remote Sensing*, 2023. Grounding `bbox` and VQA `yes/no, count, comparison` for Stage-2.
+- **CDVQA** — Change Detection VQA, bi-temporal `T1→T2` question answering — Stage-3 `cdvqa_change_sft.ipynb` paired loader.
+- **ExecutionTrace** — Graded trace `docs/execution_trace_schema.md` (`backend/schemas` ↔ `frontend/src/types/api.ts`) — inspired by `OpenEnv` compliant traces for hackathon evaluation.
 
 <div align="center">
 <i>“From reward signal alone.”</i>
