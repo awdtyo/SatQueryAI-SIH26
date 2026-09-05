@@ -223,7 +223,7 @@ with gr.Blocks(
     gr.Markdown(
         """
         # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
-        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-1 VQA **real QLoRA Qwen2-VL-2B + BigEarthNet**; grounding/change/fusion stubbed until Stage-2/3.
+        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); change/fusion stubbed until Stage-3 CDVQA.
         > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=30)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
         """
     )
@@ -291,6 +291,7 @@ with gr.Blocks(
         "status": "Space ready — click Refresh health or run a query",
         "compute": "zero-a10g (SATQUERY_FORCE_CPU=0)",
         "note": "Health with model load is on-demand to avoid No CUDA at startup",
+        "adapter_path": "imadityasarkar/satquery-phase2-vrsbench",
         "specialists": {"vqa (real)": {"is_real": "pending — run a query or Refresh health"}},
     }
 

@@ -1,6 +1,6 @@
 {
   "base_model": "Qwen/Qwen2-VL-2B-Instruct",
-  "adapter_to_continue": "imadityasarkar/satquery-qwen2vl-stage2-vrsbench",
+  "adapter_to_continue": "imadityasarkar/satquery-phase2-vrsbench",
   "subset_size": 1000,
   "val_ratio": 0.05,
   "image_max_pixels": 41216,
@@ -34,5 +34,5 @@
   "logging_steps": 5,
   "eval_steps": 50,
   "seed": 3407,
-  "notes": "Stage 3: CDVQA change SFT \u2014 bi-temporal (T1,T2) loader, task change_detection. Continues from stage2 adapter. Use paired-image tokenization and change-specific prompts. CHECKPOINT_DIR=stage3_cdvqa_change on Drive."
+  "notes": "Stage 3: CDVQA change SFT \u2014 bi-temporal (T1,T2) loader, task change_detection. Continues from stage2 adapter imadityasarkar/satquery-phase2-vrsbench. Use paired-image tokenization and change-specific prompts. CHECKPOINT_DIR=stage3_cdvqa_change on Drive."
 }

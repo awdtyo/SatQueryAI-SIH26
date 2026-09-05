@@ -2,20 +2,20 @@
 
 > **Hybrid repo:** This doc is **Docker local CPU** (`CPU basic 16GB`, `SATQUERY_FORCE_CPU=1`, `make pitch-demo`, `docker build -t satquery-ai:local .`). For **HF Spaces ZeroGPU (Blackwell + Gradio)** see `docs/hf_spaces_gradio.md` (`app.py`, `sdk: gradio`, `hardware: zero-a10g`, `SATQUERY_FORCE_CPU=0`, `@spaces.GPU`).
 
-**Image:** CPU-only (`SATQUERY_FORCE_CPU=1`), `Qwen/Qwen2-VL-2B-Instruct` + `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (~4GB cold pull, cached in `/tmp/hf_cache`). Frontend `frontend/dist` is baked into the image via multi-stage `Dockerfile:6` and served by `backend/main.py:96` at `/`.
+**Image:** CPU-only (`SATQUERY_FORCE_CPU=1`), `Qwen/Qwen2-VL-2B-Instruct` + `imadityasarkar/satquery-phase2-vrsbench` (~4GB cold pull, cached in `/tmp/hf_cache`). Frontend `frontend/dist` is baked into the image via multi-stage `Dockerfile:6` and served by `backend/main.py:96` at `/`.
 
 ## 1. Create the Space
 
 1. Go to https://huggingface.co/new-space → **Owner:** your HF username → **Name:** `satquery-ai` → **SDK:** `Docker` → **Hardware:** `CPU basic` (16GB) → **Create**.
 2. In **Settings → Variables** add (optional):
    ```
-   SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
-   SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet
-   HF_TOKEN=hf_xxx   # only if adapter/base is gated/private
-   SATQUERY_MAX_NEW_TOKENS=256
-   # SATQUERY_FORCE_CPU is already 1 in Dockerfile:15
-   ```
-   For Stage-2: `SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage2-vrsbench` (swap without code, `backend/config.py:24`).
+    SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
+    SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench
+    HF_TOKEN=hf_xxx   # only if adapter/base is gated/private
+    SATQUERY_MAX_NEW_TOKENS=256
+    # SATQUERY_FORCE_CPU is already 1 in Dockerfile:15
+    ```
+    Previous stage still available as `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` via env override.
 
 ## 2. Push this repo (Docker)
 
@@ -69,14 +69,14 @@ Keep the rest of `README.md` below the frontmatter (GitHub ignores it).
 
 ```bash
 git push spaces main  # rebuilds Docker (2-4 min)
-# To swap Stage-2 without rebuild: Space Settings → Variables → SATQUERY_ADAPTER_PATH=...stage2-vrsbench → Restart Space
+# To swap adapters without rebuild: Space Settings → Variables → SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench → Restart Space
 ```
 
 ## 6. Local Docker test (before pushing to HF)
 
 ```bash
 docker build -t satquery-ai:local .
-docker run --rm -p 7860:7860 -e HF_TOKEN=hf_xxx -e SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet satquery-ai:local
+docker run --rm -p 7860:7860 -e HF_TOKEN=hf_xxx -e SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench satquery-ai:local
 curl http://localhost:7860/health | jq
 curl -X POST http://localhost:7860/api/query -F query="Describe land cover" -F input_mode=single -F images=@tests/sample.png | jq
 open http://localhost:7860/

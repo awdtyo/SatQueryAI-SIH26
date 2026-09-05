@@ -23,7 +23,7 @@ done
 
 # --- 1. Env (CPU-only is default per backend/config.py:36) ---
 export SATQUERY_BASE_MODEL="${SATQUERY_BASE_MODEL:-Qwen/Qwen2-VL-2B-Instruct}"
-export SATQUERY_ADAPTER_PATH="${SATQUERY_ADAPTER_PATH:-imadityasarkar/satquery-qwen2vl-stage1-bigearthnet}"
+export SATQUERY_ADAPTER_PATH="${SATQUERY_ADAPTER_PATH:-imadityasarkar/satquery-phase2-vrsbench}"
 export SATQUERY_FORCE_CPU="${SATQUERY_FORCE_CPU:-1}"
 export SATQUERY_MAX_NEW_TOKENS="${SATQUERY_MAX_NEW_TOKENS:-256}"
 # HF_TOKEN optional: export HF_TOKEN=hf_xxx if adapter is gated

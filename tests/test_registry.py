@@ -24,7 +24,14 @@ def test_vqa_is_registered():
 def test_stubs_are_registered():
     from backend import registry
 
-    for task in ["grounding", "change_detection", "optical_sar_fusion"]:
+    # Stage 2 (phase2-vrsbench) promotes grounding to real VQA adapter
+    # via backend/config.py TASK_MODEL_MAP grounding->vqa
+    mod = registry.get_specialist("grounding")
+    assert mod is not None
+    # grounding now routes to vqa specialist (real adapter may be degraded in CI, but it's the vqa module)
+    assert mod is registry.get_specialist("vqa")
+
+    for task in ["change_detection", "optical_sar_fusion"]:
         mod = registry.get_specialist(task)
         assert mod is not None
         assert mod.is_real() is False
