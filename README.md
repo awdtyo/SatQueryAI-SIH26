@@ -1,3 +1,19 @@
+---
+title: SatQuery AI
+emoji: 🛰️
+colorFrom: blue
+colorTo: green
+sdk: gradio
+sdk_version: 5.16.1
+app_file: app.py
+pinned: false
+python_version: "3.12"
+hardware: zero-a10g
+startup_duration_timeout: 30m
+short_description: Agentic VLM for satellite VQA, grounding and change
+license: mit
+---
+
 <div align="center">
 
 <img src="assets/banner3.png" alt="SatQuery AI" width="1000" />
