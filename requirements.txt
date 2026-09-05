@@ -22,10 +22,11 @@ torchvision>=0.18  # required for Qwen2VL processor (video processor fallback, C
 # Gradio + ZeroGPU (HF Spaces) — kept alongside FastAPI for hybrid:
 # Docker local (CPU-only) uses FastAPI (above); HF Spaces ZeroGPU uses Gradio app.py
 # Do NOT pin `spaces` — HF Spaces provides it in Gradio base image
-# Pin to 5.16.1 to match Space frontmatter sdk_version and fix gradio_client 1.8+ compat
+# Pin to 5.16.1 to match Space frontmatter sdk_version and fix gradio_client compat
 # (gradio 6.x + old client hits `bool is not iterable` in get_api_info, see Space logs 2026-09-05)
+# gradio 5.16.1 depends on gradio_client==1.7.0 (not 1.8.0)
 gradio==5.16.1
-gradio_client==1.8.0
+gradio_client==1.7.0
 
 # Tests / lint (keep lightweight for CI)
 pytest>=8.0
