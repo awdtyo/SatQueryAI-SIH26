@@ -269,7 +269,13 @@ with gr.Blocks(
 
         with gr.Column(scale=3):
             gr.Markdown("### Intelligence Result")
-            answer = gr.Textbox(label="Answer", lines=6, buttons=["copy"])
+            try:
+                answer = gr.Textbox(label="Answer", lines=6, buttons=["copy"])
+            except TypeError:
+                try:
+                    answer = gr.Textbox(label="Answer", lines=6, show_copy_button=True)
+                except TypeError:
+                    answer = gr.Textbox(label="Answer", lines=6)
             confidence = gr.Number(label="Confidence (0–1)", precision=3)
             evidence = gr.Markdown()
 
