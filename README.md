@@ -53,7 +53,7 @@ SatQuery returns:
   "evidence": [{ "type": "image_ref", "description": "Input image for task=vqa" }],
   "execution_trace": {
     "task": "vqa",
-    "models_used": [{ "name": "imadityasarkar/satquery-qwen2vl-stage1-bigearthnet", "role": "vqa", "is_real": true }]
+    "models_used": [{ "name": "imadityasarkar/satquery-phase2-vrsbench", "role": "vqa", "is_real": true }]
   }
 }
 ```
@@ -144,7 +144,7 @@ For each stage, QLoRA adapts the frozen 2B base with 4-bit NF4 + LoRA `r16 α32 
 | Stage | Dataset | Adapter | Purpose |
 |---|---|---|---|
 | **1** | BigEarthNet Sentinel-2 `800` (val 5%) | `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` | Vision-language adaptation — `Describe land cover` |
-| **2** | VRSBench / RSVQA `1200` | `.../stage2-vrsbench` (scaffolded) | VQA + grounding — `Where is the building?` |
+| **2** | VRSBench / RSVQA `1200` | `imadityasarkar/satquery-phase2-vrsbench` | VQA + grounding — `Where is the building?` |
 | **3** | CDVQA `1000` bi-temporal | `.../stage3-cdvqa_change` (scaffolded) | Change — `What changed between dates?` |
 
 Each stage reuses the previous adapter (`adapter_to_continue`), its own `CHECKPOINT_DIR` on Drive, and `save_steps 25` auto-resume — safe to `Run all` again after Colab disconnect. See `training/notebooks/satquery_ai_qlora_finetune.ipynb` and `training/configs/*.json`.
@@ -159,6 +159,13 @@ Each stage reuses the previous adapter (`adapter_to_continue`), its own `CHECKPO
 - **Data:** `image → "Describe the land cover"` → `answer="This Sentinel-2 image shows predominantly {forest|urban fabric|arable land|...}"`
 - **Training:** 1 epoch, 800 train / 40 val, `save_steps 25` → `checkpoint-25,50,...` on Drive, resume-safe
 - **Performance:** `~842ms` T4 fp16 (`~70s` on i5 CPU `FORCE_CPU=1`), `30–80MB` adapter, `is_real` via `GET /health`
+
+### Stage-2 Adapter (Live)
+
+- **Hub:** `imadityasarkar/satquery-phase2-vrsbench` (30–80MB LoRA, continues Stage-1) — **current default** via `backend/config.py:24` `ADAPTER_PATH`
+- **Data:** VRSBench/RSVQA `1200` (val 5%) `image + question → answer` + grounding `bbox` (VQA `yes/no, count, comparison` + `Where is…`)
+- **Training:** 1 epoch, 1200 train / 60 val, `lr 1e-4` cosine, `save_steps 25` → Drive `stage2_vrsbench_sft/checkpoint-*`, resume-safe; continuing from Stage-1 adapter `training/configs/vrsbench_rsvqa_stage2.json:3`
+- **Inference:** `grounding` now real (same adapter via `TASK_MODEL_MAP grounding→vqa`), `is_real true` for `single` VQA + grounding, `change/fusion` still stubbed until Stage-3
 
 ### Answer: Before vs After
 
@@ -248,11 +255,11 @@ open http://localhost:7860
 
 The notebook:
 1. Checks T4 `nvidia-smi` (sm_75, fp16)
-2. Mounts Drive `SatQueryAI/checkpoints/stage1_bigearthnet_qlora`
+2. Mounts Drive `SatQueryAI/checkpoints/stage1_bigearthnet_qlora` (Stage-2: `stage2_vrsbench_sft`)
 3. Installs `transformers peft accelerate bitsandbytes qwen-vl-utils` (no torch upgrade)
-4. Loads `Qwen2-VL-2B` in 4-bit + `AutoProcessor(min 256*28*28 max 512*28*28)`
-5. Tokenizes `apply_chat_template` with `label -100` masking, runs `Trainer` `save_steps 25`
-6. Pushes `final_adapter` to Hub `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet`
+4. Loads `Qwen2-VL-2B` in 4-bit + `AutoProcessor(min 256*28*28 max 512*28*28)` (+ Stage-1 adapter for Stage-2 via `PeftModel.from_pretrained`)
+5. Tokenizes `apply_chat_template` with `label -100` masking, runs `Trainer` `save_steps 25` (auto-resume latest `checkpoint-*`)
+6. Pushes `final_adapter` to Hub `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` (Stage-2: `imadityasarkar/satquery-phase2-vrsbench`)
 
 ```python
 # Core QLoRA (simplified)
@@ -310,7 +317,7 @@ pip install -r requirements.txt  # torch CPU: --index-url https://download.pytor
 Create `.env` (never commit, see `.gitignore`):
 ```
 SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
-SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet
+SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench
 HF_TOKEN=hf_... # if gated
 SATQUERY_MAX_NEW_TOKENS=256
 ```

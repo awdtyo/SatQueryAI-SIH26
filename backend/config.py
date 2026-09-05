@@ -19,11 +19,11 @@ BASE_MODEL: str = os.getenv("SATQUERY_BASE_MODEL", "Qwen/Qwen2-VL-2B-Instruct")
 
 # LoRA adapter — Hub repo id or local path. This is the ONLY place the
 # adapter path is hardcoded; everything else imports from here.
-# Stage 1: BigEarthNet captioning/VQA. Stage 2/3 will swap this to
-# their respective adapters via env var.
+# Stage 2: VRSBench/RSVQA SFT (imadityasarkar/satquery-phase2-vrsbench) continues from stage1 BigEarthNet.
+# Stage 1 was imadityasarkar/satquery-qwen2vl-stage1-bigearthnet. Stage 3 will swap via env var.
 ADAPTER_PATH: str = os.getenv(
     "SATQUERY_ADAPTER_PATH",
-    "imadityasarkar/satquery-qwen2vl-stage1-bigearthnet",
+    "imadityasarkar/satquery-phase2-vrsbench",
 )
 
 # Optional HF token for gated/private repos (empty = anonymous).
@@ -45,13 +45,13 @@ IMAGE_MIN_PIXELS: int = int(os.getenv("SATQUERY_MIN_PIXELS", str(256 * 28 * 28))
 MAX_NEW_TOKENS: int = int(os.getenv("SATQUERY_MAX_NEW_TOKENS", "256"))
 
 # Task → model routing (registry consults this; controller sets task)
-# Only VQA/captioning has a trained adapter in stage 1. Others remain stubbed.
+# Stage 2 (phase2-vrsbench) provides VQA + grounding (VRSBench) via the same QLoRA adapter.
 TASK_MODEL_MAP: dict[str, str] = {
     "vqa": "vqa",
     "captioning": "vqa",
     "visual_question_answering": "vqa",
-    # Stubbed specialists — no trained adapter yet
-    "grounding": "grounding_stub",
+    # Stage 2 grounding is now real (same adapter as VQA); change/fusion remain stubbed until stage 3
+    "grounding": "vqa",
     "change_detection": "change_stub",
     "optical_sar_fusion": "fusion_stub",
 }

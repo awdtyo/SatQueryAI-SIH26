@@ -54,7 +54,7 @@ USER user
 
 # Env overridable at Space runtime: set in Space Settings → Variables
 # SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct (default in backend/config.py)
-# SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet
+# SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench
 # HF_TOKEN=hf_xxx (if gated)
 # SATQUERY_MAX_NEW_TOKENS=256
 

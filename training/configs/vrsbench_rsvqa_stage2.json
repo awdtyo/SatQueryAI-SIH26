@@ -34,5 +34,5 @@
   "logging_steps": 5,
   "eval_steps": 50,
   "seed": 3407,
-  "notes": "Stage 2: VRSBench/RSVQA SFT \u2014 continues from stage1 adapter (BigEarthNet). Lower LR 1e-4 for SFT. Duplicate satquery_ai_qlora_finetune.ipynb -> vrsbench_rsvqa_sft.ipynb, set CHECKPOINT_DIR=stage2_vrsbench_sft and DATASET_CACHE_DIR=vrsbench_subset on Drive. See configs/README.md."
+  "notes": "Stage 2: VRSBench/RSVQA SFT \u2014 continues from stage1 adapter (BigEarthNet). Output pushed to imadityasarkar/satquery-phase2-vrsbench. Lower LR 1e-4 for SFT. Duplicate satquery_ai_qlora_finetune.ipynb -> vrsbench_rsvqa_sft.ipynb, set CHECKPOINT_DIR=stage2_vrsbench_sft and DATASET_CACHE_DIR=vrsbench_subset on Drive. See configs/README.md."
 }

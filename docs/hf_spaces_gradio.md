@@ -9,13 +9,13 @@ Hybrid repo: **Docker stays for local CPU** (`make pitch-demo`, `Dockerfile` `py
 1. Go to https://huggingface.co/new-space → Owner `YOUR_USERNAME` → Name `satquery-ai` → **SDK `Gradio`** → **Hardware `ZeroGPU`** (`zero-a10g`) → Create.
 2. Settings → Variables add:
    ```
-   SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
-   SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage1-bigearthnet
-   HF_TOKEN=hf_xxx   # only if gated/private
-   SATQUERY_FORCE_CPU=0         # critical — enables CUDA on ZeroGPU (Docker local keeps 1)
-   SATQUERY_MAX_NEW_TOKENS=128  # 128 cuts 30-90s → ~15s on ZeroGPU large, avoids OOM
-   ```
-   Stage-2: `SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-qwen2vl-stage2-vrsbench` (swap without rebuild, `backend/config.py:24`).
+    SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
+    SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench
+    HF_TOKEN=hf_xxx   # only if gated/private
+    SATQUERY_FORCE_CPU=0         # critical — enables CUDA on ZeroGPU (Docker local keeps 1)
+    SATQUERY_MAX_NEW_TOKENS=128  # 128 cuts 30-90s → ~15s on ZeroGPU large, avoids OOM
+    ```
+    Stage 1 still available as `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` via env override (`backend/config.py:24`).
 
 HF injects `GRADIO_SERVER_NAME=0.0.0.0` `GRADIO_SERVER_PORT=7860`; `app.py: demo.launch(server_name, server_port)` honors it. Do **not** set `PORT` (Docker only).
 
