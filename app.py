@@ -219,6 +219,11 @@ def predict(
 # ── Gradio UI — 3-zone parity with frontend/src/App.tsx but in Blocks ──
 with gr.Blocks(
     title="SatQuery AI — Agentic Remote-Sensing VLM",
+    theme=gr.themes.Soft(),
+    css="""
+        .gradio-container {max-width: 1280px !important}
+        .panel {border: 1px solid #2a3a4a; border-radius: 10px; background: #0f1b2a0a; padding: 12px}
+        """,
 ) as demo:
     gr.Markdown(
         """
@@ -335,13 +340,16 @@ with gr.Blocks(
 if __name__ == "__main__":
     # HF Spaces injects GRADIO_SERVER_NAME/PORT; locally default 7860 for parity with Docker PORT
     port = int(os.getenv("PORT") or os.getenv("GRADIO_SERVER_PORT") or 7860)
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port,
-        show_error=True,
-        theme=gr.themes.Soft(),
-        css="""
-        .gradio-container {max-width: 1280px !important}
-        .panel {border: 1px solid #2a3a4a; border-radius: 10px; background: #0f1b2a0a; padding: 12px}
-        """,
-    )
+    # theme/css are on Blocks (not launch) for compat with older launch() that rejects theme
+    try:
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=port,
+            show_error=True,
+        )
+    except TypeError:
+        # fallback for very old Gradio where show_error not supported
+        demo.launch(
+            server_name="0.0.0.0",
+            server_port=port,
+        )
