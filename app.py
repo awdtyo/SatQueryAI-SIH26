@@ -126,7 +126,7 @@ def _coerce_gradio_image(img: Any, filename: str | None = None) -> tuple[str | N
     raise ValueError(f"Unsupported Gradio image type: {type(img)}")
 
 
-@spaces.GPU(duration=30)  # ZeroGPU: 30s worst-case (VQA ~1-2s on Blackwell, avoid 60s quota pre-check fail)
+@spaces.GPU(duration=120)  # ZeroGPU: 120s for first cold pull (4GB base + 80MB adapter), warm ~1-2s; 30s quota-safe but too short for cold
 def predict(
     query: str,
     input_mode: str,
@@ -177,16 +177,26 @@ def predict(
         resp = controller_handle(query=query.strip(), images=images, input_mode=mode)
     except Exception as e:
         # Controller already catches specialist failures, but validate_inputs raises HTTPException
-        # which we surface as user-visible error
+        # which we surface as user-visible error with full detail
+        import traceback as _tb
         try:
             from fastapi import HTTPException as _HTTPException
 
             if isinstance(e, _HTTPException):
-                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, ""
+                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}"
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
-        return f"Controller error: {e}", 0.0, {}, ""
+        # Also surface vqa load error if model not ready
+        vqa_err = ""
+        try:
+            from backend.models import vqa_specialist as _vqa
+            info = _vqa.get_model_info()
+            if not info.get("is_real"):
+                vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
+        except Exception:
+            pass
+        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}"
 
     # Build evidence markdown for display
     evidence_md_parts: list[str] = []
@@ -306,12 +316,20 @@ with gr.Blocks(
         "specialists": {"vqa (real)": {"is_real": "pending — run a query or Refresh health"}},
     }
 
-    @spaces.GPU(duration=15)
+    @spaces.GPU(duration=30)
     def _health_gpu() -> dict[str, Any]:
         try:
-            return registry.health()
+            h = registry.health()
+            # Add adapter info for quick debug
+            try:
+                from backend.models import vqa_specialist as _vqa
+                h["_vqa_info"] = _vqa.get_model_info()
+            except Exception:
+                pass
+            return h
         except Exception as e:
-            return {"error": str(e)}
+            import traceback
+            return {"error": str(e), "traceback": traceback.format_exc()[:2000]}
 
     def _health_placeholder() -> dict[str, Any]:
         # No GPU, no model load — safe at startup
