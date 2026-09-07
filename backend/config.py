@@ -30,10 +30,10 @@ ADAPTER_PATH: str = os.getenv(
 HF_TOKEN: str | None = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 
 # --- Device ---
-# CPU-only mode — forced per user request. Even if CUDA is available, the
-# backend will not use GPU / BitsAndBytes 4-bit. Set SATQUERY_FORCE_CPU=0
-# to re-enable GPU/4-bit (requires CUDA + bitsandbytes).
-FORCE_CPU: bool = os.getenv("SATQUERY_FORCE_CPU", "1").lower() not in ("0", "false", "off", "no", "")
+# Auto GPU when available — VLM runs on CUDA + BitsAndBytes 4-bit if CUDA
+# is present, otherwise falls back to CPU. Set SATQUERY_FORCE_CPU=1 to
+# force CPU-only (e.g. HF Spaces CPU basic, i5/16GB without CUDA).
+FORCE_CPU: bool = os.getenv("SATQUERY_FORCE_CPU", "0").lower() not in ("0", "false", "off", "no", "")
 
 # --- Inference knobs (config over hardcoding) ---
 # Processor dynamic resolution caps — same values as training notebook
