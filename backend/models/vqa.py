@@ -504,73 +504,50 @@ def predict(
 
     latency_ms = int((time.time() - start_ms) * 1000)
 
-    # --- Parse structured bullets/chart from markdown (bullets replace paragraph) ---
+    # --- Parse bullets from markdown (bullets replace paragraph) — chart is heuristic ---
     import re
-    import json as _json
 
     bullets: list[str] = []
-    chart: list[dict[str, Any]] = []
-
-    # 1) Try JSON fence ```json {"chart": [...] } or {"bullets": [...], "chart": [...]}
-    json_chart_m = re.search(r"```json\s*(\{.*?\})\s*```", answer, re.DOTALL)
-    if json_chart_m:
-        try:
-            j = _json.loads(json_chart_m.group(1))
-            if isinstance(j.get("chart"), list):
-                for e in j["chart"][:5]:
-                    if isinstance(e, dict) and "label" in e and "value" in e:
-                        try:
-                            chart.append({"label": str(e["label"]).lower()[:20], "value": float(e["value"])})
-                        except Exception:
-                            continue
-            if isinstance(j.get("bullets"), list):
-                bullets = [str(b)[:180] for b in j["bullets"][:6]]
-            # Remove fence from displayed answer
-            answer = (answer[: json_chart_m.start()] + answer[json_chart_m.end() :]).strip()
-        except Exception:
-            pass
-
-    # 2) Fallback: extract markdown bullets "- **Class (45%)** ..."
-    if not bullets:
-        for line in answer.splitlines():
-            s = line.strip()
-            if s.startswith("- ") or s.startswith("• ") or s.startswith("* "):
-                bullets.append(s[2:].strip()[:180])
-        # If no dash bullets but answer is short bullets-like, split on "•"
-        if not bullets and "•" in answer:
-            bullets = [b.strip()[:180] for b in answer.split("•") if b.strip()][:6]
-
-    # 3) Fallback chart: parse "Label 45%" from bullets/answer
-    if not chart:
-        for m in re.finditer(r"([a-zA-Z][a-zA-Z\s\-]{2,18})\s*\(?\s*(\d{1,2}(?:\.\d+)?)\s*%\s*\)?", answer):
-            label = m.group(1).strip().lower()
-            # filter generic words
-            if label in ("and", "with", "from", "overall", "image", "area"):
-                continue
-            try:
-                val = float(m.group(2))
-                if 1 <= val <= 90 and len(chart) < 5:
-                    chart.append({"label": label[:20], "value": val})
-            except Exception:
-                continue
-
-    # Normalize chart: cap 5, ensure sum ~100, fallback single 100
-    if chart:
-        # Trim to 5, clamp
-        chart = chart[:5]
-        for c in chart:
-            c["value"] = max(1.0, min(90.0, float(c["value"])))
-    if not chart and bullets:
-        chart = [{"label": "coverage", "value": 100.0}]
-
-    # If still no bullets, keep answer as single bullet
+    # Extract markdown bullets "- **Class** ..." or "•"
+    for line in answer.splitlines():
+        s = line.strip()
+        if s.startswith("- ") or s.startswith("• ") or s.startswith("* "):
+            bullets.append(s[2:].strip()[:180])
+    if not bullets and "•" in answer:
+        bullets = [b.strip()[:180] for b in answer.split("•") if b.strip()][:6]
+    # Remove any stray JSON fence the model may still emit (chart is heuristic now)
+    if "```json" in answer:
+        answer = re.sub(r"```json\s*\{.*?\}\s*```", "", answer, flags=re.DOTALL).strip()
     if not bullets and answer.strip():
         # Split answer sentences into bullets if model ignored format
         sents = re.split(r"(?<=[.!?])\s+", answer.strip())
         bullets = [s.strip()[:180] for s in sents if s.strip()][:6]
-        # Rebuild answer as bullet markdown for identical Gradio/React
         if bullets:
             answer = "\n".join(f"- {b}" for b in bullets)
+    else:
+        # Rebuild answer as clean bullet markdown
+        if bullets:
+            answer = "\n".join(f"- {b}" for b in bullets)
+
+    # Heuristic chart — measured from pixels, not LLM hallucinated
+    chart: list[dict[str, Any]] = []
+    if getattr(app_config, "CHART_ENABLED", True):
+        try:
+            from backend.utils.chart import compute_chart  # type: ignore
+
+            source = getattr(app_config, "CHART_SOURCE", "heuristic")
+            if source in ("heuristic", "auto"):
+                chart = compute_chart(image)
+            else:
+                chart = []
+            # Fallback if heuristic fails (uniform image)
+            if not chart:
+                chart = [{"label": "coverage", "value": 100.0}]
+        except Exception as e:
+            logger.warning("Heuristic chart failed: %s", e)
+            chart = [{"label": "coverage", "value": 100.0}]
+    else:
+        chart = []
 
     # Minimal evidence for stage 1 — echo input
     evidence = [
