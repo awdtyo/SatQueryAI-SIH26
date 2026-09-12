@@ -37,9 +37,10 @@ export default function ResultsPanel({ response }: Props) {
           <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Result</span>
           <div className="flex-1 divider" />
         </div>
-        <p className="text-[15px] leading-relaxed text-ink font-sans">
+        <p className="text-[14px] leading-relaxed text-ink font-sans whitespace-pre-wrap">
           {response.answer}
         </p>
+        <span className="text-[10px] text-ink-muted">{response.answer.split(/\s+/).length} words · {response.answer.length} chars</span>
       </div>
 
       {/* Evidence */}

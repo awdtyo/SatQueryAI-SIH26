@@ -43,8 +43,15 @@ _load_error: str | None = None
 _load_attempted: bool = False
 _is_real: bool = False  # True if adapter actually loaded, False if stub/degraded
 
-# Generation defaults
+# Generation defaults — detailed outputs
 _MAX_NEW_TOKENS = app_config.MAX_NEW_TOKENS
+_MIN_NEW_TOKENS = app_config.MIN_NEW_TOKENS
+_TEMPERATURE = app_config.TEMPERATURE
+_TOP_P = app_config.TOP_P
+_REPETITION_PENALTY = app_config.REPETITION_PENALTY
+_NO_REPEAT_NGRAM_SIZE = app_config.NO_REPEAT_NGRAM_SIZE
+_SYSTEM_PROMPT = app_config.SYSTEM_PROMPT
+_DETAIL_SUFFIX = app_config.DETAIL_SUFFIX
 
 
 def _get_compute_dtype():  # type: ignore[no-untyped-def]
@@ -320,16 +327,24 @@ def predict(
 
     image = pil_images[0]
 
-    # Build Qwen2-VL chat messages
-    messages = [
+    # Build Qwen2-VL chat messages — detailed analyst persona via system prompt
+    # Task-aware: grounding/change keep concise, vqa/captioning gets detailed suffix
+    q_text = query.strip()
+    # Append detail suffix for very short generic queries to elicit percentages/locations
+    if len(q_text.split()) <= 6 and task in ("vqa", "captioning", "visual_question_answering"):
+        q_text = q_text + _DETAIL_SUFFIX
+    messages: list[dict[str, Any]] = []
+    if _SYSTEM_PROMPT:
+        messages.append({"role": "system", "content": [{"type": "text", "text": _SYSTEM_PROMPT}]})
+    messages.append(
         {
             "role": "user",
             "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": query.strip()},
+                {"type": "text", "text": q_text},
             ],
         }
-    ]
+    )
 
     try:
         prompt_text = _processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -378,13 +393,18 @@ def predict(
             scores = None
             gen_ids = None
             # Try to get scores; fall back to plain generate for mocked tests / old transformers
+            # Detailed outputs: sampling enabled when temperature>0, with repetition controls
+            do_sample = _TEMPERATURE > 0
             try:
                 outputs = _model.generate(
                     **inputs,
                     max_new_tokens=_MAX_NEW_TOKENS,
-                    do_sample=False,
-                    temperature=0.0,
-                    top_p=None,
+                    min_new_tokens=_MIN_NEW_TOKENS if _MIN_NEW_TOKENS > 0 else None,
+                    do_sample=do_sample,
+                    temperature=_TEMPERATURE if do_sample else None,
+                    top_p=_TOP_P if do_sample else None,
+                    repetition_penalty=_REPETITION_PENALTY,
+                    no_repeat_ngram_size=_NO_REPEAT_NGRAM_SIZE,
                     output_scores=True,
                     return_dict_in_generate=True,
                 )
@@ -401,9 +421,9 @@ def predict(
                 gen_ids = _model.generate(
                     **inputs,
                     max_new_tokens=_MAX_NEW_TOKENS,
-                    do_sample=False,
-                    temperature=0.0,
-                    top_p=None,
+                    do_sample=do_sample,
+                    temperature=_TEMPERATURE if do_sample else 0.0,
+                    top_p=_TOP_P if do_sample else None,
                 )
                 scores = None
             # Normalize gen_ids to tensor-like with shape [batch, seq_len]

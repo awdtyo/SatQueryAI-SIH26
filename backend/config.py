@@ -70,8 +70,31 @@ def get_device_count() -> int:
 IMAGE_MAX_PIXELS: int = int(os.getenv("SATQUERY_MAX_PIXELS", str(512 * 28 * 28)))
 IMAGE_MIN_PIXELS: int = int(os.getenv("SATQUERY_MIN_PIXELS", str(256 * 28 * 28)))
 
-# Generation
-MAX_NEW_TOKENS: int = int(os.getenv("SATQUERY_MAX_NEW_TOKENS", "256"))
+# Generation — detailed outputs by default (384 tokens ≈ 250-300 words, warm ~1.5s on zero-a10g)
+# Override via SATQUERY_MAX_NEW_TOKENS env (Space Variables → 128 for CPU basic, 384-512 for ZeroGPU)
+MAX_NEW_TOKENS: int = int(os.getenv("SATQUERY_MAX_NEW_TOKENS", "384"))
+# Minimum tokens to avoid premature EOS on generic queries
+MIN_NEW_TOKENS: int = int(os.getenv("SATQUERY_MIN_NEW_TOKENS", "40"))
+# Sampling — 0.0 deterministic (old), 0.2-0.3 gives richer detail while staying factual
+TEMPERATURE: float = float(os.getenv("SATQUERY_TEMPERATURE", "0.2"))
+TOP_P: float | None = float(os.getenv("SATQUERY_TOP_P", "0.9")) if os.getenv("SATQUERY_TOP_P", "0.9").lower() not in ("", "none", "null") else None
+REPETITION_PENALTY: float = float(os.getenv("SATQUERY_REPETITION_PENALTY", "1.05"))
+NO_REPEAT_NGRAM_SIZE: int = int(os.getenv("SATQUERY_NO_REPEAT_NGRAM_SIZE", "3"))
+# System prompt — detailed analyst persona (override via SATQUERY_SYSTEM_PROMPT)
+SYSTEM_PROMPT: str = os.getenv(
+    "SATQUERY_SYSTEM_PROMPT",
+    "You are SatQuery AI, an expert remote-sensing analyst. "
+    "Provide detailed, evidence-grounded answers in 3-5 sentences (100-180 words). "
+    "Include land-cover taxonomy (BigEarthNet 19 classes), approximate percentages, "
+    "quadrant locations (northwest, southeast, etc.), spatial context (10m Sentinel-2), "
+    "and note uncertainty. Be specific, not generic. If the query is yes/no or counting, "
+    "answer directly first, then add one sentence of context.",
+)
+# For very short queries (e.g. 'Describe land cover'), append this to elicit detail
+DETAIL_SUFFIX: str = os.getenv(
+    "SATQUERY_DETAIL_SUFFIX",
+    " Provide a detailed, specific analysis with percentages and locations.",
+)
 
 # Task → model routing (registry consults this; controller sets task)
 # Stage 2 (phase2-vrsbench) provides VQA + grounding (VRSBench) via the same QLoRA adapter.
