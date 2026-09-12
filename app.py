@@ -155,12 +155,13 @@ def _coerce_gradio_image(img: Any, filename: str | None = None) -> tuple[str | N
     raise ValueError(f"Unsupported Gradio image type: {type(img)}")
 
 
-@spaces.GPU(duration=90)  # ZeroGPU: 90s for first cold pull (4GB base + 80MB adapter), warm ~1-2s; 30s too short for cold, 120 exceeds free quota
+@spaces.GPU(duration=60)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
 def predict(
     query: str,
     input_mode: str,
     image_a: Any,
     image_b: Any | None = None,
+    progress: Any = None,
 ) -> tuple[str, float, dict[str, Any], str]:
     """Gradio handler — decorated for ZeroGPU scheduling.
 
@@ -368,21 +369,26 @@ with gr.Blocks(
     # Initial health load — prefilled, no GPU quota cost
     demo.load(fn=_health_placeholder, outputs=[health])
 
-    # Wire predict
+    # Wire predict — queue required for @spaces.GPU; show status updates
     run_btn.click(
         fn=predict,
         inputs=[query, input_mode, image_a, image_b],
         outputs=[answer, confidence, trace, evidence],
+        show_progress=True,
     )
 
     gr.Markdown(
         """
         ---
         **Local Docker (CPU-only, i5/16GB):** `make pitch-demo` or `SATQUERY_FORCE_CPU=1 uvicorn backend.main:app --port 8000` + `npm run dev` (`5173`). **HF Spaces Gradio ZeroGPU:** this `app.py` on `zero-a10g` with `SATQUERY_FORCE_CPU=0` (`Spaces → Settings → Variables`). See `docs/hf_spaces.md` (Docker) and `docs/hf_spaces_gradio.md` (ZeroGPU).
+        If **Execute Analysis** does nothing, check `Spaces → Logs` for `Gradio startup health: deferred` and `Spaces → Settings → Hardware` is `zero-a10g`. First click cold-pulls ~4GB (30-60s), warm ~1.2s. Anon quota is 60s – `duration=60` fits.
         """
     )
 
     clear_btn.click(fn=lambda: (None, None, "", "single", "", 0.0, {}, ""), inputs=None, outputs=[image_a, image_b, query, input_mode, answer, confidence, trace, evidence])
+
+# Required for @spaces.GPU scheduling — without queue the GPU worker never drains and UI hangs
+demo.queue(max_size=20)
 
 if __name__ == "__main__":
     # HF Spaces injects GRADIO_SERVER_NAME/PORT; locally default 7860 for parity with Docker PORT
