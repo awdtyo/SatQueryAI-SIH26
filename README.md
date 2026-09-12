@@ -3,15 +3,11 @@ title: SatQuery AI
 emoji: 🛰️
 colorFrom: blue
 colorTo: green
-sdk: gradio
-sdk_version: 5.16.1
-app_file: app.py
+sdk: docker
+app_port: 7860
 pinned: false
-python_version: "3.12"
-hardware: zero-a10g
-startup_duration_timeout: 30m
-short_description: Agentic VLM for satellite VQA, grounding and change
 license: mit
+short_description: Agentic VLM for satellite VQA, grounding and change — same React frontend locally and on Spaces
 ---
 
 <div align="center">
@@ -249,11 +245,13 @@ print(r.json()["answer"])
 print(r.json()["execution_trace"])
 ```
 
-### Run via HF Spaces (ZeroGPU)
+### Run via HF Spaces (Docker — same React as local)
 
-Space: `https://huggingface.co/spaces/imadityasarkar/satquery-ai` — Gradio `zero-a10g` `app.py` with `@spaces.GPU` (`SATQUERY_FORCE_CPU=0` enables 4-bit on Blackwell, `~1s` vs `~70s` CPU).
+Space: `https://huggingface.co/spaces/imadityasarkar/satquery-ai` — **Docker `cpu basic`** `Dockerfile` multi-stage (`node:20` → `frontend/dist` → `python:3.12` `uvicorn backend.main:app:7860`), **same React 3-zone Intelligence Console** as `http://localhost:5173` (`backend/main.py:105` serves `frontend/dist` at `/` + `/api` same-origin). `SATQUERY_FORCE_CPU=1` (CPU, ~30-90s cold pull, cached `/tmp/hf_cache`). No `app.py` Gradio — Space runs verbatim `frontend/dist` baked in image.
 
-### Run via Docker (CPU)
+> Previous Gradio `zero-a10g` `app.py` (`sdk: gradio`, `@spaces.GPU ~1s`) is kept in repo for local `Space Grotesk` font demo (`docs/hf_spaces_gradio.md`) but **ignored when `sdk: docker`** — HF prioritizes `Dockerfile` when `sdk: docker`.
+
+### Run via Docker locally (CPU)
 
 ```bash
 docker build -t satquery-ai:local .
@@ -296,7 +294,7 @@ Open `frontend` at `http://localhost:5173` and upload a Sentinel-2 chip:
 - **Confidence gauge** — `HIGH ≥0.75` green / `MEDIUM` amber / `LOW` red, 20-block bar
 - **Evidence** — `image_ref` / `bounding_box [[x,y]...]` / `overlay` per task
 
-For HF Space, open `https://huggingface.co/spaces/imadityasarkar/satquery-ai` — same Gradio `Blocks` (`app.py`) with `Refresh health`.
+For HF Space, open `https://huggingface.co/spaces/imadityasarkar/satquery-ai` — **same React** as local (`/` serves `frontend/dist`, same `ExecutionTrace` + `bi-temporal` `T1/T2` viewer + `Change` chart). `app.py` Gradio is ignored in `sdk: docker`.
 
 ---
 
