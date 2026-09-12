@@ -7,7 +7,7 @@ sdk: docker
 app_port: 7860
 pinned: false
 license: mit
-short_description: Agentic VLM for satellite VQA, grounding and change — same React frontend locally and on Spaces
+short_description: Agentic VLM for satellite VQA, grounding and change
 ---
 
 <div align="center">
