@@ -114,8 +114,12 @@ YOLO_CLASSES: str | None = os.getenv("SATQUERY_YOLO_CLASSES")
 CHANGE_ADAPTER_PATH: str = os.getenv("SATQUERY_CHANGE_ADAPTER_PATH", "imadityasarkar/cdvqa_change")
 CHANGE_BASE_MODEL: str = os.getenv("SATQUERY_CHANGE_BASE_MODEL", BASE_MODEL)
 
+# Optical-SAR fusion — Stage 2 VRSBench adapter (same as VQA, fusion-aware)
+FUSION_ADAPTER_PATH: str = os.getenv("SATQUERY_FUSION_ADAPTER_PATH", ADAPTER_PATH)
+FUSION_BASE_MODEL: str = os.getenv("SATQUERY_FUSION_BASE_MODEL", BASE_MODEL)
+
 # Task → model routing (registry consults this; controller sets task)
-# Stage 2 (phase2-vrsbench) provides VQA + grounding (VRSBench) via the same QLoRA adapter.
+# Stage 2 (phase2-vrsbench) provides VQA + grounding + optical-SAR fusion via same QLoRA.
 # Stage 3 cdvqa_change is now real for bi-temporal; count is real via YOLO.
 TASK_MODEL_MAP: dict[str, str] = {
     "vqa": "vqa",
@@ -127,7 +131,9 @@ TASK_MODEL_MAP: dict[str, str] = {
     "change_detection": "change",
     "change": "change",
     "cdvqa": "change",
-    "optical_sar_fusion": "fusion_stub",
+    "optical_sar_fusion": "fusion",
+    "fusion": "fusion",
+    "sar": "fusion",
 }
 
 # Supported input modes (mirrors frontend InputMode)

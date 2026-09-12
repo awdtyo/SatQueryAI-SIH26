@@ -99,9 +99,15 @@ if os.getenv("SPACES_ZERO_GPU") == "1":
             _change._load_attempted = False  # type: ignore
             _change._is_real = False  # type: ignore
             _change._load_error = None  # type: ignore
+            import backend.models.fusion as _fusion
+
+            _fusion._load_attempted = False  # type: ignore
+            _fusion._is_real = False  # type: ignore
+            _fusion._load_error = None  # type: ignore
             # Also reset processor cache so tokenizer reloads on GPU worker if needed
             _change._processor = None  # type: ignore
             _vqa._processor = None  # type: ignore
+            _fusion._processor = None  # type: ignore
         except Exception:
             pass
 
@@ -289,12 +295,17 @@ def predict(
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
-        # Also surface specialist load error if model not ready (VQA or change)
+        # Also surface specialist load error if model not ready (VQA / change / fusion)
         vqa_err = ""
         try:
-            from backend.models import vqa_specialist as _vqa, change_specialist as _change
+            from backend.models import vqa_specialist as _vqa, change_specialist as _change, fusion_specialist as _fusion
 
-            info = _change.get_model_info() if mode == "bi-temporal" else _vqa.get_model_info()
+            if mode == "bi-temporal":
+                info = _change.get_model_info()
+            elif mode == "optical-sar":
+                info = _fusion.get_model_info()
+            else:
+                info = _vqa.get_model_info()
             if not info.get("is_real"):
                 vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
         except Exception:
@@ -446,9 +457,11 @@ with gr.Blocks(
         "note": "Health with model load is on-demand to avoid No CUDA at startup",
         "adapter_path": "imadityasarkar/satquery-phase2-vrsbench",
         "change_adapter_path": "imadityasarkar/cdvqa_change",
+        "fusion_adapter_path": "imadityasarkar/satquery-phase2-vrsbench",
         "specialists": {
             "vqa (real)": {"is_real": "pending — run a query or Refresh health"},
             "change_detection (real)": {"is_real": "pending — run a query or Refresh health"},
+            "optical_sar_fusion (real)": {"is_real": "pending — run a query or Refresh health"},
         },
     }
 
@@ -456,12 +469,13 @@ with gr.Blocks(
     def _health_gpu() -> dict[str, Any]:
         try:
             h = registry.health()
-            # Add adapter info for quick debug — both VQA and change (bi-temporal)
+            # Add adapter info for quick debug — VQA, change (bi-temporal) and fusion (optical-SAR)
             try:
-                from backend.models import vqa_specialist as _vqa, change_specialist as _change
+                from backend.models import vqa_specialist as _vqa, change_specialist as _change, fusion_specialist as _fusion
 
                 h["_vqa_info"] = _vqa.get_model_info()
                 h["_change_info"] = _change.get_model_info()
+                h["_fusion_info"] = _fusion.get_model_info()
             except Exception:
                 pass
             return h

@@ -69,9 +69,9 @@ def _normalize_task(task: str) -> str:
             return "count"
         if mapped in ("grounding_stub", "grounding"):
             return "grounding"
-        if mapped in ("change_stub", "change_detection"):
+        if mapped in ("change_stub", "change_detection", "change"):
             return "change_detection"
-        if mapped in ("fusion_stub", "optical_sar_fusion"):
+        if mapped in ("fusion_stub", "fusion", "optical_sar_fusion"):
             return "optical_sar_fusion"
         return mapped
     return t
@@ -133,7 +133,7 @@ def list_specialists() -> dict[str, dict[str, Any]]:
         "yolo (real)": yolo_specialist.get_model_info(),
         "grounding (real)": grounding_specialist.get_model_info(),
         "change_detection (real)": change_specialist.get_model_info(),
-        "optical_sar_fusion (stub)": fusion_specialist.get_model_info(),
+        "optical_sar_fusion (real)": fusion_specialist.get_model_info(),
     }
 
 

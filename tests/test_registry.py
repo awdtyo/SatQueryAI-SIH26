@@ -40,12 +40,13 @@ def test_stubs_are_registered():
     assert "is_real" in info
     assert info.get("task") == "change_detection"
 
-    # optical_sar_fusion remains stub
+    # optical_sar_fusion is REAL via imadityasarkar/satquery-phase2-vrsbench (Phase 2 VRSBench)
     mod = registry.get_specialist("optical_sar_fusion")
     assert mod is not None
-    assert mod.is_real() is False
+    assert hasattr(mod, "predict")
     info = mod.get_model_info()
-    assert info.get("is_real") is False
+    assert "is_real" in info
+    assert info.get("task") == "optical_sar_fusion"
 
 
 def test_unknown_task_raises():
@@ -92,7 +93,7 @@ def test_health_shape():
     assert "vqa (real)" in health["registry"]
     assert "grounding (real)" in health["registry"]
     assert "change_detection (real)" in health["registry"]
-    assert "optical_sar_fusion (stub)" in health["registry"]
+    assert "optical_sar_fusion (real)" in health["registry"]
     # Each entry has is_real
     for info in health["registry"].values():
         assert "is_real" in info
