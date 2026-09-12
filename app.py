@@ -355,10 +355,18 @@ def predict(
 # ── Gradio UI — 3-zone parity with frontend/src/App.tsx but in Blocks ──
 with gr.Blocks(
     title="SatQuery AI — Agentic Remote-Sensing VLM",
-    theme=gr.themes.Soft(),
+    theme=gr.themes.Soft(
+        font=[gr.themes.GoogleFont("Space Grotesk"), "ui-sans-serif", "system-ui"],
+        font_mono=[gr.themes.GoogleFont("JetBrains Mono"), "ui-monospace", "monospace"],
+    ),
     css="""
-        .gradio-container {max-width: 1280px !important}
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+        .gradio-container {max-width: 1280px !important; font-family: 'Inter', 'Space Grotesk', ui-sans-serif, system-ui, sans-serif !important}
+        h1, h2, h3, .panel-label, .tag-muted {font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif !important; letter-spacing: -0.02em}
         .panel {border: 1px solid #2a3a4a; border-radius: 10px; background: #0f1b2a0a; padding: 12px}
+        /* tighten markdown + json */
+        .prose {font-family: 'Inter', sans-serif !important}
+        code, pre {font-family: 'JetBrains Mono', ui-monospace, monospace !important}
         """,
 ) as demo:
     gr.Markdown(
