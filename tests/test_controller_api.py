@@ -105,10 +105,66 @@ def test_query_bi_temporal_routes_to_change_stub():
         body = r.json()
         # bi-temporal + change keyword should route to change_detection
         assert body["execution_trace"]["task"] == "change_detection"
-        # Should call change stub (we mocked registry.predict, so just check it was called)
+        # Should call change specialist (we mocked registry.predict, so just check it was called)
         assert mock_predict.called
         # Check that the task passed to predict was change_detection
         _, kwargs = mock_predict.call_args
         # call args are (images, query, task)
         args, kwargs = mock_predict.call_args
         assert args[2] == "change_detection" or kwargs.get("task") == "change_detection"
+
+
+def test_bi_temporal_rejects_single_image():
+    client = _make_client()
+    png = _png_bytes()
+    r = client.post(
+        "/api/query",
+        data={"query": "What changed?", "input_mode": "bi-temporal"},
+        files=[("images", ("t1.png", png, "image/png"))],
+    )
+    assert r.status_code == 422
+    assert "expects 2" in r.json()["detail"]
+    assert "bi-temporal" in r.json()["detail"]
+
+
+def test_bi_temporal_rejects_three_images():
+    client = _make_client()
+    png = _png_bytes()
+    r = client.post(
+        "/api/query",
+        data={"query": "What changed?", "input_mode": "bi-temporal"},
+        files=[
+            ("images", ("t1.png", png, "image/png")),
+            ("images", ("t2.png", png, "image/png")),
+            ("images", ("t3.png", png, "image/png")),
+        ],
+    )
+    assert r.status_code == 422
+    assert "expects 2" in r.json()["detail"]
+
+
+def test_bi_temporal_vague_query_still_routes_to_change():
+    """Even vague query on bi-temporal must route to change_detection (mode precedence)."""
+    client = _make_client()
+    png = _png_bytes()
+    with patch("backend.registry.predict") as mock_predict:
+        mock_predict.return_value = {"answer": "Change detected", "evidence": [], "confidence": 0.7, "_latency_ms": 10}
+        r = client.post(
+            "/api/query",
+            data={"query": "hello", "input_mode": "bi-temporal"},
+            files=[("images", ("t1.png", png, "image/png")), ("images", ("t2.png", png, "image/png"))],
+        )
+        assert r.status_code == 200
+        assert r.json()["execution_trace"]["task"] == "change_detection"
+
+
+def test_optical_sar_rejects_single_image():
+    client = _make_client()
+    png = _png_bytes()
+    r = client.post(
+        "/api/query",
+        data={"query": "Fuse optical and SAR", "input_mode": "optical-sar"},
+        files=[("images", ("opt.png", png, "image/png"))],
+    )
+    assert r.status_code == 422
+    assert "expects 2" in r.json()["detail"]

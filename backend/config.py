@@ -110,18 +110,23 @@ YOLO_IOU: float = float(os.getenv("SATQUERY_YOLO_IOU", "0.45"))
 # Comma-separated class filter for count queries (empty = count all). Override to restrict, e.g. "car,truck"
 YOLO_CLASSES: str | None = os.getenv("SATQUERY_YOLO_CLASSES")
 
+# Change detection — Stage 3 CDVQA bi-temporal adapter (public)
+CHANGE_ADAPTER_PATH: str = os.getenv("SATQUERY_CHANGE_ADAPTER_PATH", "imadityasarkar/cdvqa_change")
+CHANGE_BASE_MODEL: str = os.getenv("SATQUERY_CHANGE_BASE_MODEL", BASE_MODEL)
+
 # Task → model routing (registry consults this; controller sets task)
 # Stage 2 (phase2-vrsbench) provides VQA + grounding (VRSBench) via the same QLoRA adapter.
-# Count is now real via YOLO (COCO), vqa remains QLoRA.
+# Stage 3 cdvqa_change is now real for bi-temporal; count is real via YOLO.
 TASK_MODEL_MAP: dict[str, str] = {
     "vqa": "vqa",
     "captioning": "vqa",
     "visual_question_answering": "vqa",
     "count": "yolo",
     "counting": "yolo",
-    # Stage 2 grounding is now real (same adapter as VQA); change/fusion remain stubbed until stage 3
     "grounding": "vqa",
-    "change_detection": "change_stub",
+    "change_detection": "change",
+    "change": "change",
+    "cdvqa": "change",
     "optical_sar_fusion": "fusion_stub",
 }
 

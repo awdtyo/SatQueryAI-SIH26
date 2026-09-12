@@ -16,6 +16,7 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
   const primaryImage = images[0];
   const hasEvidence = evidence.length > 0;
   const bboxEvidence = evidence.filter((e) => e.type === "bounding_box" && e.coordinates);
+  const isBiTemporal = inputMode === "bi-temporal";
 
   return (
     <div className="panel flex-1 flex flex-col min-h-0 relative">
@@ -28,7 +29,7 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
 
       {/* Viewer area */}
       <div className="flex-1 relative bg-surface-900 overflow-hidden">
-        {/* Subtle grid background (reduced opacity) */}
+        {/* Subtle grid background */}
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
@@ -38,14 +39,47 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
           }}
         />
 
-        {primaryImage ? (
+        {isBiTemporal && images.length > 0 ? (
+          /* Bi-temporal: side-by-side T1 + T2 so both evidence image_index 0/1 are visible */
+          <div className="absolute inset-0 flex">
+            {[0, 1].map((idx) => {
+              const img = images[idx];
+              const label = idx === 0 ? "T1 (BEFORE)" : "T2 (AFTER)";
+              return (
+                <div key={idx} className="flex-1 relative overflow-hidden border-r last:border-r-0 border-surface-400/20">
+                  {img ? (
+                    <>
+                      <img src={img.preview} alt={img.label} className="absolute inset-0 w-full h-full object-contain bg-surface-900" />
+                      <div className="absolute top-2 left-2 text-[9px] font-bold tracking-widest text-white bg-surface-900/80 px-1.5 py-0.5 rounded">
+                        {label}
+                      </div>
+                      <div className="absolute bottom-2 left-2 text-[10px] text-ink-muted/70 truncate max-w-[70%]">{img.file.name}</div>
+                    </>
+                  ) : (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-ink-muted">
+                      <span className="text-[11px]">Awaiting {label}</span>
+                      <span className="text-[10px] opacity-60">Upload {idx === 0 ? "Date 1" : "Date 2"} in input panel</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {/* Corner brackets */}
+            <div className="absolute top-3 left-3 w-4 h-4 border-t border-l border-accent/30 pointer-events-none" />
+            <div className="absolute top-3 right-3 w-4 h-4 border-t border-r border-accent/30 pointer-events-none" />
+            <div className="absolute bottom-3 left-3 w-4 h-4 border-b border-l border-accent/30 pointer-events-none" />
+            <div className="absolute bottom-3 right-3 w-4 h-4 border-b border-r border-accent/30 pointer-events-none" />
+            {hasEvidence && (
+              <div className="absolute bottom-3 right-4 flex items-center gap-1.5 pointer-events-none bg-surface-900/70 px-1.5 py-0.5 rounded">
+                <span className="w-1.5 h-1.5 rounded-full bg-signal-amber" />
+                <span className="text-[10px] font-medium text-signal-amber/80">{evidence.length} EVIDENCE</span>
+              </div>
+            )}
+          </div>
+        ) : primaryImage ? (
           <>
-            {/* Image */}
-            <img
-              src={primaryImage.preview}
-              alt={primaryImage.label}
-              className="absolute inset-0 w-full h-full object-contain"
-            />
+            {/* Single / optical-sar single-pane */}
+            <img src={primaryImage.preview} alt={primaryImage.label} className="absolute inset-0 w-full h-full object-contain" />
 
             {/* Evidence bounding boxes */}
             {bboxEvidence.map((ev, i) => {
@@ -79,24 +113,22 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
               );
             })}
 
-            {/* Corner brackets */}
             <div className="absolute top-3 left-3 w-4 h-4 border-t border-l border-accent/30 pointer-events-none" />
             <div className="absolute top-3 right-3 w-4 h-4 border-t border-r border-accent/30 pointer-events-none" />
             <div className="absolute bottom-3 left-3 w-4 h-4 border-b border-l border-accent/30 pointer-events-none" />
             <div className="absolute bottom-3 right-3 w-4 h-4 border-b border-r border-accent/30 pointer-events-none" />
 
-            {/* Top-left info */}
             <div className="absolute top-3 left-4 text-[10px] text-ink-muted/70 pointer-events-none space-y-0.5">
               <div className="font-mono">ANALYSIS VIEW</div>
-              <div>{primaryImage.file.type || "UNKNOWN"} · {formatFileSize(primaryImage.file.size)}</div>
+              <div>
+                {primaryImage.file.type || "UNKNOWN"} · {formatFileSize(primaryImage.file.size)}
+              </div>
             </div>
 
-            {/* Bottom-left label */}
             <div className="absolute bottom-3 left-4 text-[11px] font-medium text-accent/70 pointer-events-none">
               {primaryImage.label.toUpperCase()}
             </div>
 
-            {/* Bottom-right evidence count */}
             {hasEvidence && (
               <div className="absolute bottom-3 right-4 flex items-center gap-1.5 pointer-events-none">
                 <span className="w-1.5 h-1.5 rounded-full bg-signal-amber" />
@@ -105,7 +137,6 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
             )}
           </>
         ) : (
-          /* Bright professional empty state */
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-5 px-8 text-center">
             <div className="relative w-28 h-28">
               <svg width="112" height="112" viewBox="0 0 96 96" fill="none" className="text-accent/25">
@@ -120,12 +151,8 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
             </div>
             <div>
               <p className="text-[16px] font-medium text-ink tracking-wide">Satellite Imagery</p>
-              <p className="text-[13px] text-ink-muted mt-1.5">
-                Awaiting image input
-              </p>
-              <p className="text-[12px] text-ink-muted/70 mt-3 max-w-sm leading-relaxed">
-                Upload imagery from the input panel to begin analysis.
-              </p>
+              <p className="text-[13px] text-ink-muted mt-1.5">Awaiting image input</p>
+              <p className="text-[12px] text-ink-muted/70 mt-3 max-w-sm leading-relaxed">Upload imagery from the input panel to begin analysis.</p>
             </div>
           </div>
         )}
@@ -136,8 +163,10 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
         <span>Bands: {inputMode === "optical-sar" ? "OPT + SAR" : inputMode === "bi-temporal" ? "T1 + T2" : "RGB"}</span>
         <span>Res: Auto</span>
         <div className="flex-1" />
-        {primaryImage ? (
-          <span className="truncate max-w-[40%]">{primaryImage.file.name}</span>
+        {images.length > 0 ? (
+          <span className="truncate max-w-[40%]">
+            {isBiTemporal ? `${images[0]?.file.name ?? "?"} → ${images[1]?.file.name ?? "?"}` : primaryImage!.file.name}
+          </span>
         ) : (
           <span>Awaiting data</span>
         )}

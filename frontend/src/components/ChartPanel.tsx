@@ -21,15 +21,17 @@ export default function ChartPanel({ chart, chartType }: { chart: ChartEntry[]; 
   if (!chart || chart.length === 0) return null;
 
   const isCount = chartType === "count";
+  const isChange = chartType === "change";
   const data = chart.map((c) => ({ name: c.label, value: c.value }));
 
-  const title = isCount ? "Count" : chartType === "change" ? "Change" : "Distribution";
+  const title = isCount ? "Count" : isChange ? "Change" : "Distribution";
   const unit = isCount ? "" : "%";
+  const isDistribution = !isCount && !isChange;
   return (
     <div className="border border-surface-400/30 bg-surface-800/40 rounded-lg p-3">
       <div className="flex items-center justify-between mb-2">
         <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">
-          {title} {isCount ? "(YOLO)" : "(measured)"}
+          {title} {isCount ? "(YOLO)" : isChange ? "(delta T2-T1)" : "(measured)"}
         </span>
         <div className="flex gap-1">
           <button
@@ -52,17 +54,17 @@ export default function ChartPanel({ chart, chartType }: { chart: ChartEntry[]; 
           {mode === "bar" ? (
             <BarChart data={data}>
               <XAxis dataKey="name" tick={{ fontSize: 10, fill: "#9ca3af" }} interval={0} angle={-20} dy={10} height={40} />
-              <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} domain={isCount ? [0, "auto"] : [0, 100]} tickFormatter={(v) => `${v}${unit}`} />
+              <YAxis tick={{ fontSize: 10, fill: "#9ca3af" }} domain={isChange ? [-100, 100] : isCount ? [0, "auto"] : [0, 100]} tickFormatter={(v) => `${v}${unit}`} />
               <Tooltip formatter={(v: number) => `${v}${unit}`} contentStyle={{ background: "#1e293b", border: "1px solid #334155", fontSize: 11 }} />
               <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                 {data.map((_, i) => (
-                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                  <Cell key={i} fill={isChange && data[i].value < 0 ? "#f43f5e" : COLORS[i % COLORS.length]} />
                 ))}
               </Bar>
             </BarChart>
           ) : (
             <PieChart>
-              <Pie data={data} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={(e) => `${e.name} ${e.value}${unit}`}>
+              <Pie data={data.map(d => ({...d, value: Math.abs(d.value)}))} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={70} label={(e) => `${e.name} ${e.value}${unit}`}>
                 {data.map((_, i) => (
                   <Cell key={i} fill={COLORS[i % COLORS.length]} />
                 ))}

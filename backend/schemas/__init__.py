@@ -51,8 +51,8 @@ class ExecutionTrace(BaseModel):
 # --- Structured output for bullets/charts (bullets replace paragraph, bar/pie toggle) ---
 
 class ChartEntry(BaseModel):
-    label: str = Field(description="Class label, e.g. forest, urban, water or car count")
-    value: float = Field(ge=0.0, le=1000.0, description="Percentage 0-100 or count 0-1000")
+    label: str = Field(description="Class label, e.g. forest, urban, water or car count or delta")
+    value: float = Field(ge=-100.0, le=1000.0, description="Percentage -100..100, delta, or count")
 
 
 class StructuredOutput(BaseModel):

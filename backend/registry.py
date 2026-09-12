@@ -131,8 +131,8 @@ def list_specialists() -> dict[str, dict[str, Any]]:
     return {
         "vqa (real)": vqa_specialist.get_model_info(),
         "yolo (real)": yolo_specialist.get_model_info(),
-        "grounding (stub)": grounding_specialist.get_model_info(),
-        "change_detection (stub)": change_specialist.get_model_info(),
+        "grounding (real)": grounding_specialist.get_model_info(),
+        "change_detection (real)": change_specialist.get_model_info(),
         "optical_sar_fusion (stub)": fusion_specialist.get_model_info(),
     }
 

@@ -72,16 +72,15 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
       };
 
       setImages((prev) => {
+        // Fixed-length array indexed by slot — guarantees T1=0, T2=1 order regardless of fill order.
         const next = [...prev];
-        const existingIdx = next.findIndex(
-          (img) => img.role === role && img.label === currentMode.slotLabels[slotIndex],
-        );
-        if (existingIdx >= 0) {
-          URL.revokeObjectURL(next[existingIdx]!.preview);
-          next.splice(existingIdx, 1);
-        }
-        next.splice(slotIndex, 0, newImage);
-        return next;
+        // Ensure length covers all slots so indexed assignment is stable.
+        while (next.length < currentMode.slots) next.push(undefined as unknown as UploadedImage);
+        const existing = next[slotIndex];
+        if (existing?.preview) URL.revokeObjectURL(existing.preview);
+        next[slotIndex] = newImage;
+        // Trim trailing undefined (should not happen after fill, but keep compact)
+        return next.filter(Boolean);
       });
     },
     [inputMode, currentMode, setImages],
@@ -101,9 +100,10 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
       setImages((prev) => {
         const next = [...prev];
         const img = next[slotIndex];
-        if (img) URL.revokeObjectURL(img.preview);
+        if (img?.preview) URL.revokeObjectURL(img.preview);
+        // Keep slot ordering — replace with undefined and compact only trailing holes.
         next.splice(slotIndex, 1);
-        return next;
+        return next.filter(Boolean);
       });
     },
     [setImages],

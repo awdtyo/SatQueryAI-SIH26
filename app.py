@@ -85,7 +85,8 @@ if os.getenv("SPACES_ZERO_GPU") == "1":
     # On ZeroGPU, force GPU unless user explicitly set SATQUERY_FORCE_CPU=1
     if "SATQUERY_FORCE_CPU" not in os.environ:
         os.environ["SATQUERY_FORCE_CPU"] = "0"
-        # Patch already-imported config and reset cached vqa load so next predict loads on real CUDA
+        # Patch already-imported config and reset cached specialist loads so next predict loads on real CUDA
+        # Both VQA and change (bi-temporal) must be reset — otherwise CPU-cached _load_attempted blocks GPU load inside @spaces.GPU worker
         try:
             app_config.FORCE_CPU = False  # type: ignore
             import backend.models.vqa as _vqa
@@ -93,6 +94,14 @@ if os.getenv("SPACES_ZERO_GPU") == "1":
             _vqa._load_attempted = False  # type: ignore
             _vqa._is_real = False  # type: ignore
             _vqa._load_error = None  # type: ignore
+            import backend.models.change as _change
+
+            _change._load_attempted = False  # type: ignore
+            _change._is_real = False  # type: ignore
+            _change._load_error = None  # type: ignore
+            # Also reset processor cache so tokenizer reloads on GPU worker if needed
+            _change._processor = None  # type: ignore
+            _vqa._processor = None  # type: ignore
         except Exception:
             pass
 
@@ -103,7 +112,8 @@ else:
 
 # Warm registry health at startup — but NOT on ZeroGPU outside GPU worker (would cache CPU model)
 # On ZeroGPU, health outside GPU would load model on emulated CUDA and cache as CPU, breaking real GPU fork
-_is_zerogpu = os.getenv("SPACES_ZERO_GPU") == "1" or os.getenv("SATQUERY_FORCE_CPU", "0").lower() in ("0", "false", "off", "no", "")
+# Only skip when HF actually signals ZeroGPU; FORCE_CPU=0 alone (local dev default) should still warm health
+_is_zerogpu = os.getenv("SPACES_ZERO_GPU") == "1"
 if not _is_zerogpu:
     try:
         h = registry.health()
@@ -180,25 +190,35 @@ def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[n
         fig.patch.set_facecolor("#0f172a")
         ax.set_facecolor("#0f172a")
         is_count = data_type == "count"
-        title = "Count" if is_count else "Distribution"
+        is_change = data_type == "change"
+        title = "Count" if is_count else "Change" if is_change else "Distribution"
         if chart_type.lower() == "pie":
             fmt = "%1.0f" if is_count else "%1.0f%%"
-            ax.pie(values, labels=labels, autopct=fmt, colors=colors[: len(values)], textprops={"color": "#e2e8f0", "fontsize": 8})
-            ax.set_title(title + (" (YOLO)" if is_count else " (measured)"), color="#e2e8f0", fontsize=10)
+            # For change, pie with negative doesn't make sense — use absolute for pie
+            pie_vals = [abs(v) for v in values] if is_change else values
+            ax.pie(pie_vals, labels=labels, autopct=fmt, colors=colors[: len(values)], textprops={"color": "#e2e8f0", "fontsize": 8})
+            ax.set_title(title + (" (YOLO)" if is_count else " (delta T2-T1)" if is_change else " (measured)"), color="#e2e8f0", fontsize=10)
         else:
-            bars = ax.bar(labels, values, color=colors[: len(values)], edgecolor="#334155")
+            bars = ax.bar(labels, values, color=[ "#f43f5e" if is_change and v < 0 else colors[i % len(colors)] for i, v in enumerate(values)], edgecolor="#334155")
             if is_count:
                 ymax = max(values) * 1.25 if values else 5
                 ax.set_ylim(0, max(5, ymax))
                 ax.set_ylabel("Count", color="#94a3b8", fontsize=8)
                 for bar, v in zip(bars, values):
                     ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1, f"{int(v)}", ha="center", va="bottom", color="#e2e8f0", fontsize=8)
+            elif is_change:
+                ax.set_ylim(-100, 100)
+                ax.set_ylabel("Δ %", color="#94a3b8", fontsize=8)
+                ax.axhline(0, color="#334155", linewidth=0.8)
+                for bar, v in zip(bars, values):
+                    y = v + (2 if v >= 0 else -4)
+                    ax.text(bar.get_x() + bar.get_width() / 2, y, f"{v:+.0f}%", ha="center", va="bottom" if v>=0 else "top", color="#e2e8f0", fontsize=8)
             else:
                 ax.set_ylim(0, 100)
                 ax.set_ylabel("%", color="#94a3b8", fontsize=8)
                 for bar, v in zip(bars, values):
                     ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, f"{v:.0f}%", ha="center", va="bottom", color="#e2e8f0", fontsize=8)
-            ax.set_title(title + (" (YOLO)" if is_count else " (measured)"), color="#e2e8f0", fontsize=10)
+            ax.set_title(title + (" (YOLO)" if is_count else " (delta T2-T1)" if is_change else " (measured)"), color="#e2e8f0", fontsize=10)
             ax.tick_params(colors="#94a3b8", labelsize=8)
             plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         plt.tight_layout()
@@ -269,11 +289,12 @@ def predict(
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
-        # Also surface vqa load error if model not ready
+        # Also surface specialist load error if model not ready (VQA or change)
         vqa_err = ""
         try:
-            from backend.models import vqa_specialist as _vqa
-            info = _vqa.get_model_info()
+            from backend.models import vqa_specialist as _vqa, change_specialist as _change
+
+            info = _change.get_model_info() if mode == "bi-temporal" else _vqa.get_model_info()
             if not info.get("is_real"):
                 vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
         except Exception:
@@ -343,7 +364,7 @@ with gr.Blocks(
     gr.Markdown(
         """
         # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
-        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); change/fusion stubbed until Stage-3 CDVQA.
+        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); Stage-3 **change real `imadityasarkar/cdvqa_change` bi-temporal**, fusion stub.
         > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=30)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
         """
     )
@@ -416,17 +437,23 @@ with gr.Blocks(
         "compute": "zero-a10g (SATQUERY_FORCE_CPU=0)",
         "note": "Health with model load is on-demand to avoid No CUDA at startup",
         "adapter_path": "imadityasarkar/satquery-phase2-vrsbench",
-        "specialists": {"vqa (real)": {"is_real": "pending — run a query or Refresh health"}},
+        "change_adapter_path": "imadityasarkar/cdvqa_change",
+        "specialists": {
+            "vqa (real)": {"is_real": "pending — run a query or Refresh health"},
+            "change_detection (real)": {"is_real": "pending — run a query or Refresh health"},
+        },
     }
 
     @spaces.GPU(duration=30)
     def _health_gpu() -> dict[str, Any]:
         try:
             h = registry.health()
-            # Add adapter info for quick debug
+            # Add adapter info for quick debug — both VQA and change (bi-temporal)
             try:
-                from backend.models import vqa_specialist as _vqa
+                from backend.models import vqa_specialist as _vqa, change_specialist as _change
+
                 h["_vqa_info"] = _vqa.get_model_info()
+                h["_change_info"] = _change.get_model_info()
             except Exception:
                 pass
             return h

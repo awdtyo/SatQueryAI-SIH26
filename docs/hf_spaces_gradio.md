@@ -11,11 +11,13 @@ Hybrid repo: **Docker stays for local CPU** (`make pitch-demo`, `Dockerfile` `py
    ```
     SATQUERY_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct
     SATQUERY_ADAPTER_PATH=imadityasarkar/satquery-phase2-vrsbench
+    SATQUERY_CHANGE_ADAPTER_PATH=imadityasarkar/cdvqa_change  # bi-temporal Stage-3, required for BI-TEMPORAL
+    SATQUERY_CHANGE_BASE_MODEL=Qwen/Qwen2-VL-2B-Instruct       # optional, defaults to BASE_MODEL
     HF_TOKEN=hf_xxx   # only if gated/private
     SATQUERY_FORCE_CPU=0         # critical — enables CUDA on ZeroGPU (Docker local keeps 1)
     SATQUERY_MAX_NEW_TOKENS=128  # 128 cuts 30-90s → ~15s on ZeroGPU large, avoids OOM
     ```
-    Stage 1 still available as `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` via env override (`backend/config.py:24`).
+    Stage 1 still available as `imadityasarkar/satquery-qwen2vl-stage1-bigearthnet` via env override (`backend/config.py:24`). Change adapter defaults to `imadityasarkar/cdvqa_change` (`backend/config.py:114`) so BI-TEMPORAL works even without the variable, but pin it explicitly for clarity.
 
 HF injects `GRADIO_SERVER_NAME=0.0.0.0` `GRADIO_SERVER_PORT=7860`; `app.py: demo.launch(server_name, server_port)` honors it. Do **not** set `PORT` (Docker only).
 
@@ -58,15 +60,15 @@ pinned: false
 
 ## 3. How it works
 
-* `app.py` at module scope can `import spaces` (provided by Gradio base image on `zero-a10g`/`CPU`, no-op locally). Real CUDA only inside `@spaces.GPU(duration=90)` handler (`spaces` emulates CUDA outside, forks worker after).
-* `predict(query, input_mode, image_a, image_b)` `app.py: @spaces.GPU(duration=90)` coerces `gr.Image(type="pil")` → `(filename, bytes)` or `PIL.Image` and calls `backend.controller.handle(query, images, input_mode)` directly (no HTTP, reuses `validate_inputs` + `classify_task` + `registry.predict` + `ExecutionTrace`). Returns `(answer, confidence, trace_json, evidence_md)` to `gr.Textbox/Number/JSON/Markdown`.
-* Model: `AutoProcessor` + `Qwen2VLForConditionalGeneration` + `PeftModel.from_pretrained(base, ADAPTER_PATH)` loaded lazily on first `@spaces.GPU` call (ZeroGPU emulation), cached per container. `SATQUERY_FORCE_CPU=0` keeps `device_map="auto"` + `BitsAndBytesConfig NF4 4-bit` `backend/models/vqa.py:121` for ~1.1GB VRAM on `large`.
+* `app.py` at module scope can `import spaces` (provided by Gradio base image on `zero-a10g`/`CPU`, no-op locally). Real CUDA only inside `@spaces.GPU(duration=60)` handler (`spaces` emulates CUDA outside, forks worker after). `app.py:84` resets both `vqa` and `change` singletons on `SPACES_ZERO_GPU=1` so first `@spaces.GPU` call loads real CUDA, not cached CPU.
+* `predict(query, input_mode, image_a, image_b)` `app.py: @spaces.GPU(duration=60)` coerces `gr.Image(type="pil")` → `(filename, bytes)` or `PIL.Image` and calls `backend.controller.handle(query, images, input_mode)` directly (no HTTP, reuses `validate_inputs` + `classify_task` + `registry.predict` + `ExecutionTrace`). `bi-temporal` routes via `backend/registry.py:45` `change_detection->change_specialist` (`imadityasarkar/cdvqa_change`) with delta `chart_type="change"` (`backend/models/change.py:414`). Returns `(answer, confidence, trace_json, evidence_md, chart_state)` to `gr.Markdown/Number/JSON/Markdown/Plot`.
+* Model: `AutoProcessor` + `Qwen2VLForConditionalGeneration` + `PeftModel.from_pretrained(base, ADAPTER_PATH)` (VQA) and `CHANGE_ADAPTER_PATH` (bi-temporal) loaded lazily on first `@spaces.GPU` call, cached per container. `SATQUERY_FORCE_CPU=0` keeps `device_map="auto"` + `BitsAndBytesConfig NF4 4-bit` `backend/models/vqa.py:121` / `backend/models/change.py:143` for ~1.1GB VRAM on `large`.
 
 ## 4. Verify
 
-* **Logs:** `Spaces → Logs` → `Max retries exceeded` gone, `Running on: http://0.0.0.0:7860` + `Gradio startup health: {"vqa (real)": true}`. `@spaces.GPU` scan must find handler or `RuntimeError: No @spaces.GPU function detected`.
-* **UI:** `https://<you>-satquery-ai.hf.space/` → 3 columns (Imagery Input `single/optical-sar/bi-temporal` `Radio` → second `Image` visibility `app.py: _toggle_second`, query `Textbox` + `Examples`, `Execute Analysis` → `Answer`/`Confidence`/`Evidence` + `ExecutionTrace JSON` (`is_real true`) + `Health JSON`). Second image required for `optical-sar`/`bi-temporal` (`controller.validate_inputs:67` `2` else `422`).
-* **Health:** `Refresh health` button → `registry.health()` `vqa (real) is_real true`.
+* **Logs:** `Spaces → Logs` → `Max retries exceeded` gone, `Running on: http://0.0.0.0:7860` + `Gradio startup health: deferred (ZeroGPU — will load on first @spaces.GPU call)`. `@spaces.GPU` scan must find handler or `RuntimeError: No @spaces.GPU function detected`. Bi-temporal cold pull logs `Change specialist READY — GPU`.
+* **UI:** `https://<you>-satquery-ai.hf.space/` → 3 columns (Imagery Input `single/optical-sar/bi-temporal` `Radio` → second `Image` visibility `app.py: _toggle_second`, query `Textbox` + `Examples`, `Execute Analysis` → `Answer`/`Confidence`/`Evidence` + `ExecutionTrace JSON` (`is_real true`, `task=change_detection`) + `Health JSON` + `Change` chart `Δ %`). Second image required for `optical-sar`/`bi-temporal` (`controller.validate_inputs:67` `2` else `422`). BI-TEMPORAL expects `What changed between T1 and T2?` style query.
+* **Health:** `Refresh health` button → `registry.health()` `vqa (real) is_real true`, `change_detection (real) is_real true`, `_change_info.adapter_path=imadityasarkar/cdvqa_change`.
 * **Cold pull:** `~4GB` base + `30-80MB` adapter to `/tmp/hf_cache` on first `@spaces.GPU` call, `30-90s` on `large` (faster than CPU basic due to Blackwell). Warm `~1-2s` vs `CPU 30-90s`.
 
 ## 5. Local Graduo test (no ZeroGPU hardware, decorator is no-op)
@@ -95,7 +97,7 @@ make pitch-demo  # bare uvicorn + vite dev, also CPU-only
 
 * **`✗ DEGRADED: Adapter load failed (401)`** → set `HF_TOKEN` in Space Variables.
 * **`RuntimeError: No @spaces.GPU function detected`** → `spaces.GPU` must decorate the `btn.click(fn=predict)` handler itself, not a helper.
-* **`ZeroGPU quota exceeded (60s requested vs 30s left)`** → `predict` uses `@spaces.GPU(duration=90)` for cold pull (warm ~1s), `_health_gpu` stays `30` to save quota; lower `predict` to `30` only if anonymous quota is tight.
+* **`ZeroGPU quota exceeded (60s requested vs 30s left)`** → `predict` uses `@spaces.GPU(duration=60)` for cold pull (warm ~1s), `_health_gpu` stays `30` to save quota; anon quota is 60s total, 60 fits, 90 exceeds and hangs UI.
 * **`CUDA error: no kernel image is a suitable replacement`** → you added `flash-attn3` (needs `sm_90a/sm_100a`, Blackwell `sm_120` lacks `TMEM`) — don’t add.
 * **`Qwen2VLVideoProcessor requires Torchvision`** → now in `requirements.txt: torchvision>=0.18`, Docker `pip install` includes it.
 * **`ModuleNotFoundError: spaces`** locally → stub handles it; on Space, `spaces` is provided — **do not** `pip install spaces` mismatch (don’t pin `spaces`).

@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="SatQuery AI — Agentic Remote-Sensing VLM",
-    description="Controller + registry + specialist models (VQA real, grounding/change/fusion stubbed in stage 1)",
+    description="Controller + registry + specialist models (VQA+grounding real via Stage-2, change real via Stage-3 cdvqa_change, fusion stub)",
     version="0.1.0",
     lifespan=lifespan,
 )

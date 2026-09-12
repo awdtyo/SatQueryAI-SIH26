@@ -82,12 +82,12 @@ type QueryResponse = {
 - `execution_trace.confidence == confidence` (top-level mirrors trace).
 - `models_used[].is_real == !is_stub` for non-degraded paths; degraded VQA returns `is_real=false is_stub=true` with `load_error` in `get_model_info()` `backend/models/vqa.py:375`.
 - `evidence_refs` and `evidence` are mirrors — controller builds both from same `result["evidence"]` `backend/controller/__init__.py:247`.
-- `task` is normalized via `registry._normalize_task()` `backend/registry.py:54` and `controller.classify_task()` `backend/controller/__init__.py:152` (`single`->`vqa`/`grounding`, `bi-temporal`->`change_detection`, `optical-sar`->`optical_sar_fusion`).
+- `task` is normalized via `registry._normalize_task()` `backend/registry.py:59` and `controller.classify_task()` `backend/controller/__init__.py:182` (`single`->`vqa`/`grounding`/`count`, `bi-temporal`->`change_detection` via `imadityasarkar/cdvqa_change`, `optical-sar`->`optical_sar_fusion`).
 - `total_latency_ms` includes validation + classification + specialist `latency_ms` (specialist may supply `_latency_ms`).
 
 ## Health
 
-`GET /health` and `GET /api/health` return `HealthResponse` `backend/api/__init__.py:23`. `specialists` is `registry.health()` `backend/registry.py:132` keyed by `"vqa (real)"`, `"grounding (stub)"`, etc.
+`GET /health` and `GET /api/health` return `HealthResponse` `backend/api/__init__.py:23`. `specialists` is `registry.health()` `backend/registry.py:118` keyed by `"vqa (real)"`, `"yolo (real)"`, `"grounding (real)"`, `"change_detection (real)"` (`imadityasarkar/cdvqa_change`), `"optical_sar_fusion (stub)"`.
 
 ## Frontend rendering
 

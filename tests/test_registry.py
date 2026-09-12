@@ -31,12 +31,21 @@ def test_stubs_are_registered():
     # grounding now routes to vqa specialist (real adapter may be degraded in CI, but it's the vqa module)
     assert mod is registry.get_specialist("vqa")
 
-    for task in ["change_detection", "optical_sar_fusion"]:
-        mod = registry.get_specialist(task)
-        assert mod is not None
-        assert mod.is_real() is False
-        info = mod.get_model_info()
-        assert info.get("is_real") is False
+    # change_detection is REAL via imadityasarkar/cdvqa_change (Stage 3) — do not assert is_real False
+    # In CI without HF/cache it may be degraded, so just check interface, not is_real value.
+    mod = registry.get_specialist("change_detection")
+    assert mod is not None
+    assert hasattr(mod, "predict")
+    info = mod.get_model_info()
+    assert "is_real" in info
+    assert info.get("task") == "change_detection"
+
+    # optical_sar_fusion remains stub
+    mod = registry.get_specialist("optical_sar_fusion")
+    assert mod is not None
+    assert mod.is_real() is False
+    info = mod.get_model_info()
+    assert info.get("is_real") is False
 
 
 def test_unknown_task_raises():
@@ -81,7 +90,9 @@ def test_health_shape():
     health = registry.health()
     assert "registry" in health
     assert "vqa (real)" in health["registry"]
-    assert "grounding (stub)" in health["registry"]
+    assert "grounding (real)" in health["registry"]
+    assert "change_detection (real)" in health["registry"]
+    assert "optical_sar_fusion (stub)" in health["registry"]
     # Each entry has is_real
     for info in health["registry"].values():
         assert "is_real" in info
