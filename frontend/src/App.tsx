@@ -150,9 +150,9 @@ export default function App() {
             evidence={response?.evidence ?? []}
           />
 
-          {/* Intelligence output below viewer — detailed view */}
+          {/* Intelligence output below viewer — bullets+charts (62vh as selected) */}
           {response && (
-            <section className="panel flex-shrink-0 max-h-[55vh] overflow-y-auto animate-slide-up">
+            <section className="panel flex-shrink-0 max-h-[62vh] overflow-y-auto animate-slide-up">
               <div className="panel-header">
                 <span className="panel-label">Intelligence Result</span>
                 <div className="flex-1" />

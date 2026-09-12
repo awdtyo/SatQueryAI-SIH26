@@ -48,6 +48,19 @@ class ExecutionTrace(BaseModel):
     total_latency_ms: int
 
 
+# --- Structured output for bullets/charts (bullets replace paragraph, bar/pie toggle) ---
+
+class ChartEntry(BaseModel):
+    label: str = Field(description="Class label, e.g. forest, urban, water")
+    value: float = Field(ge=0.0, le=100.0, description="Percentage 0-100")
+
+
+class StructuredOutput(BaseModel):
+    bullets: list[str] = Field(default_factory=list, description="3-6 markdown bullet strings")
+    chart: list[ChartEntry] = Field(default_factory=list, description="2-5 entries for bar/pie, values sum ~100")
+    summary: str | None = Field(default=None, description="Optional one-line summary")
+
+
 # --- API payloads ---
 
 class QueryResponse(BaseModel):
@@ -55,6 +68,8 @@ class QueryResponse(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     execution_trace: ExecutionTrace
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
+    chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
 
 
 class HealthResponse(BaseModel):
@@ -72,6 +87,8 @@ __all__ = [
     "EvidenceRef",
     "ModelTraceEntry",
     "ExecutionTrace",
+    "ChartEntry",
+    "StructuredOutput",
     "QueryResponse",
     "HealthResponse",
 ]

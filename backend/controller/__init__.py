@@ -311,9 +311,47 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
         total_latency_ms=total_latency,
     )
 
+    # Structured bullets/chart from specialist (parsed markdown)
+    structured = result.get("_structured")
+    chart = result.get("_chart")
+    # Normalize to StructuredOutput shape
+    structured_obj = None
+    chart_list = None
+    try:
+        if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
+            from backend.schemas import ChartEntry, StructuredOutput
+
+            bullets = [str(b) for b in structured.get("bullets", [])[:6]]
+            chart_entries = []
+            for c in structured.get("chart", [])[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
+                        continue
+            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries)
+            chart_list = chart_entries
+        elif isinstance(chart, list) and chart:
+            from backend.schemas import ChartEntry, StructuredOutput
+
+            chart_entries = []
+            for c in chart[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
+                        continue
+            if chart_entries:
+                structured_obj = StructuredOutput(bullets=[], chart=chart_entries)
+                chart_list = chart_entries
+    except Exception as e:
+        logger.warning("Structured parse failed: %s", e)
+
     return QueryResponse(
         answer=answer,
         confidence=confidence,
         execution_trace=trace,
         evidence=evidence_refs,
+        structured=structured_obj,
+        chart=chart_list,
     )

@@ -47,12 +47,25 @@ export interface EvidenceRef {
   image_index?: number;
 }
 
+/** Structured bullets/chart from backend (bullets replace paragraph) */
+export interface ChartEntry {
+  label: string;
+  value: number;
+}
+export interface StructuredOutput {
+  bullets: string[];
+  chart: ChartEntry[];
+  summary?: string;
+}
+
 /** Full query response from the backend */
 export interface QueryResponse {
   answer: string;
   confidence: number;
   execution_trace: ExecutionTrace;
   evidence: EvidenceRef[];
+  structured?: StructuredOutput | null;
+  chart?: ChartEntry[] | null;
 }
 
 /** Application error shape */

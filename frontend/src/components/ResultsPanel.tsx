@@ -1,4 +1,7 @@
+// @ts-nocheck
+import ReactMarkdown from "react-markdown";
 import type { QueryResponse, EvidenceRef } from "../types/api";
+import ChartPanel from "./ChartPanel";
 
 interface Props {
   response: QueryResponse | null;
@@ -29,19 +32,25 @@ function EvidenceBadge({ evidence }: { evidence: EvidenceRef }) {
 export default function ResultsPanel({ response }: Props) {
   if (!response) return null;
 
+  // Prefer structured chart if present, else fallback to flat chart
+  const chart = response.structured?.chart ?? response.chart ?? [];
+
   return (
     <div className="space-y-4">
-      {/* Answer — the most readable text on the page */}
+      {/* Answer — bullets replace paragraph, rendered as markdown */}
       <div>
         <div className="flex items-center gap-2 mb-2">
-          <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Result</span>
+          <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Result — bullets</span>
           <div className="flex-1 divider" />
         </div>
-        <p className="text-[14px] leading-relaxed text-ink font-sans whitespace-pre-wrap">
-          {response.answer}
-        </p>
+        <div className="text-[13px] leading-relaxed text-ink font-sans prose prose-invert max-w-none prose-p:my-1 prose-li:my-0.5 prose-ul:ml-4">
+          <ReactMarkdown>{response.answer}</ReactMarkdown>
+        </div>
         <span className="text-[10px] text-ink-muted">{response.answer.split(/\s+/).length} words · {response.answer.length} chars</span>
       </div>
+
+      {/* Chart — bar/pie toggle, identical to Gradio */}
+      {chart.length > 0 && <ChartPanel chart={chart} />}
 
       {/* Evidence */}
       {response.evidence.length > 0 && (

@@ -18,6 +18,7 @@ bitsandbytes>=0.45.5
 qwen-vl-utils>=0.0.10
 accelerate>=1.4.0  # required by transformers/peft device_map
 torchvision>=0.18  # required for Qwen2VL processor (video processor fallback, CPU)
+matplotlib>=3.5  # for Gradio Plot bar/pie charts (identical to React recharts)
 
 # Gradio + ZeroGPU (HF Spaces) — kept alongside FastAPI for hybrid:
 # Docker local (CPU-only) uses FastAPI (above); HF Spaces ZeroGPU uses Gradio app.py
