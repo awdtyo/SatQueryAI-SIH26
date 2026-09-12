@@ -22,6 +22,7 @@ from backend.models import (
     fusion_specialist,
     grounding_specialist,
     vqa_specialist,
+    yolo as yolo_specialist,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,10 @@ _REGISTRY: dict[str, Any] = {
     # Aliases that controller may emit
     "vqa_captioning": vqa_specialist,
     "describe": vqa_specialist,
+    # YOLO counting — real (question-aware charts)
+    "count": yolo_specialist,
+    "counting": yolo_specialist,
+    "yolo": yolo_specialist,
     # Stubbed specialists
     "grounding": grounding_specialist,
     "visual_grounding": grounding_specialist,
@@ -60,6 +65,8 @@ def _normalize_task(task: str) -> str:
         # Normalize the "stub" suffix
         if mapped == "vqa":
             return "vqa"
+        if mapped in ("yolo", "count"):
+            return "count"
         if mapped in ("grounding_stub", "grounding"):
             return "grounding"
         if mapped in ("change_stub", "change_detection"):
@@ -123,6 +130,7 @@ def list_specialists() -> dict[str, dict[str, Any]]:
     # Add a human-friendly summary keyed by specialist name
     return {
         "vqa (real)": vqa_specialist.get_model_info(),
+        "yolo (real)": yolo_specialist.get_model_info(),
         "grounding (stub)": grounding_specialist.get_model_info(),
         "change_detection (stub)": change_specialist.get_model_info(),
         "optical_sar_fusion (stub)": fusion_specialist.get_model_info(),
@@ -142,6 +150,7 @@ def preload_all() -> dict[str, bool]:
     results: dict[str, bool] = {}
     for name, mod in {
         "vqa": vqa_specialist,
+        "yolo": yolo_specialist,
         "grounding": grounding_specialist,
         "change": change_specialist,
         "fusion": fusion_specialist,

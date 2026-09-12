@@ -52,9 +52,11 @@ export interface ChartEntry {
   label: string;
   value: number;
 }
+export type ChartType = "distribution" | "count" | "change" | "none";
 export interface StructuredOutput {
   bullets: string[];
   chart: ChartEntry[];
+  chart_type?: ChartType | null;
   summary?: string;
 }
 
@@ -66,6 +68,7 @@ export interface QueryResponse {
   evidence: EvidenceRef[];
   structured?: StructuredOutput | null;
   chart?: ChartEntry[] | null;
+  chart_type?: ChartType | null;
 }
 
 /** Application error shape */

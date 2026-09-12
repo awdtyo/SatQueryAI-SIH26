@@ -565,8 +565,9 @@ def predict(
         "evidence": evidence,
         "confidence": float(confidence),
         "_latency_ms": latency_ms,  # internal, stripped by controller if needed
-        "_structured": {"bullets": bullets, "chart": chart},
+        "_structured": {"bullets": bullets, "chart": chart, "chart_type": "distribution"},
         "_chart": chart,
+        "_chart_type": "distribution",
     }
 
 

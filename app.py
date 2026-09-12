@@ -155,8 +155,19 @@ def _coerce_gradio_image(img: Any, filename: str | None = None) -> tuple[str | N
     raise ValueError(f"Unsupported Gradio image type: {type(img)}")
 
 
-def _chart_to_plot(chart_data: list[dict[str, Any]], chart_type: str = "Bar"):  # type: ignore[no-untyped-def]
-    """Identical to frontend ChartPanel — bar/pie toggle, 62vh panel."""
+def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[no-untyped-def]
+    """Identical to frontend ChartPanel — bar/pie toggle, question-aware (count vs distribution)."""
+    # chart_state may be list (legacy) or dict {"data": [...], "type": "count"}
+    data_type = "distribution"
+    if isinstance(chart_state, dict) and "data" in chart_state:
+        chart_data = chart_state.get("data", []) or []
+        data_type = str(chart_state.get("type", "distribution")).lower()
+    elif isinstance(chart_state, list):
+        chart_data = chart_state
+        # Heuristic fallback: if task was count, treat as count (small ints)
+        data_type = "distribution"
+    else:
+        return None
     if not chart_data:
         return None
     try:
@@ -168,17 +179,27 @@ def _chart_to_plot(chart_data: list[dict[str, Any]], chart_type: str = "Bar"):  
         fig, ax = plt.subplots(figsize=(4, 2.2))
         fig.patch.set_facecolor("#0f172a")
         ax.set_facecolor("#0f172a")
+        is_count = data_type == "count"
+        title = "Count" if is_count else "Distribution"
         if chart_type.lower() == "pie":
-            ax.pie(values, labels=labels, autopct="%1.0f%%", colors=colors[: len(values)], textprops={"color": "#e2e8f0", "fontsize": 8})
-            ax.set_title("Distribution", color="#e2e8f0", fontsize=10)
+            fmt = "%1.0f" if is_count else "%1.0f%%"
+            ax.pie(values, labels=labels, autopct=fmt, colors=colors[: len(values)], textprops={"color": "#e2e8f0", "fontsize": 8})
+            ax.set_title(title + (" (YOLO)" if is_count else " (measured)"), color="#e2e8f0", fontsize=10)
         else:
             bars = ax.bar(labels, values, color=colors[: len(values)], edgecolor="#334155")
-            ax.set_ylim(0, 100)
-            ax.set_ylabel("%", color="#94a3b8", fontsize=8)
-            ax.set_title("Distribution", color="#e2e8f0", fontsize=10)
+            if is_count:
+                ymax = max(values) * 1.25 if values else 5
+                ax.set_ylim(0, max(5, ymax))
+                ax.set_ylabel("Count", color="#94a3b8", fontsize=8)
+                for bar, v in zip(bars, values):
+                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1, f"{int(v)}", ha="center", va="bottom", color="#e2e8f0", fontsize=8)
+            else:
+                ax.set_ylim(0, 100)
+                ax.set_ylabel("%", color="#94a3b8", fontsize=8)
+                for bar, v in zip(bars, values):
+                    ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, f"{v:.0f}%", ha="center", va="bottom", color="#e2e8f0", fontsize=8)
+            ax.set_title(title + (" (YOLO)" if is_count else " (measured)"), color="#e2e8f0", fontsize=10)
             ax.tick_params(colors="#94a3b8", labelsize=8)
-            for bar, v in zip(bars, values):
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 1, f"{v:.0f}%", ha="center", va="bottom", color="#e2e8f0", fontsize=8)
             plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         plt.tight_layout()
         return fig
@@ -193,7 +214,7 @@ def predict(
     image_a: Any,
     image_b: Any | None = None,
     progress: Any = None,
-) -> tuple[str, float, dict[str, Any], str, list[dict[str, Any]]]:
+) -> tuple[str, float, dict[str, Any], str, dict[str, Any]]:
     """Gradio handler — decorated for ZeroGPU scheduling.
 
     Args:
@@ -208,30 +229,30 @@ def predict(
     """
     started = time.time()
     if not query or not query.strip():
-        return "Please enter a query.", 0.0, {}, "No query provided.", []
+        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "none"}
 
     # Validate mode
     mode = (input_mode or "single").strip().lower()
     if mode not in app_config.SUPPORTED_INPUT_MODES:
-        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", []
+        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "none"}
 
     # Collect images per mode
     images: list[Any] = []
     try:
         if mode == "single":
             if image_a is None:
-                return "Upload one image for single mode.", 0.0, {}, "", []
+                return "Upload one image for single mode.", 0.0, {}, "", {"data": [], "type": "none"}
             images.append(_coerce_gradio_image(image_a, "image.png"))
         elif mode in ("optical-sar", "bi-temporal"):
             if image_a is None or image_b is None:
-                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", []
+                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "none"}
             images.append(_coerce_gradio_image(image_a, "image0.png"))
             images.append(_coerce_gradio_image(image_b, "image1.png"))
         else:
-            return f"Unknown mode {mode}", 0.0, {}, "", []
+            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "none"}
     except Exception as e:
         logger.exception("Image coercion failed: %s", e)
-        return f"Image error: {e}", 0.0, {}, "", []
+        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "none"}
 
     # Delegate to controller (reuses validate_inputs, classify_task, registry.predict, ExecutionTrace)
     try:
@@ -244,7 +265,7 @@ def predict(
             from fastapi import HTTPException as _HTTPException
 
             if isinstance(e, _HTTPException):
-                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", []
+                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "none"}
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
@@ -257,7 +278,7 @@ def predict(
                 vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
         except Exception:
             pass
-        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}", []
+        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}", {"data": [], "type": "none"}
 
     # Build evidence markdown for display
     evidence_md_parts: list[str] = []
@@ -284,17 +305,30 @@ def predict(
 
     logger.info("Gradio predict: mode=%s task=%s conf=%.3f wall=%dms answer_len=%d", mode, trace_dict.get("task"), conf, wall_ms, len(resp.answer))
 
-    # Chart data for identical bar/pie toggle (bullets replace paragraph)
+    # Chart data for identical bar/pie toggle — question-aware (count vs distribution)
     chart_data: list[dict[str, Any]] = []
+    chart_type_data: str = "distribution"
     try:
+        # Prefer flat chart, else structured
         if getattr(resp, "chart", None):
             chart_data = [{"label": c.label, "value": float(c.value)} for c in resp.chart]  # type: ignore[attr-defined]
         elif getattr(resp, "structured", None) and resp.structured and resp.structured.chart:  # type: ignore[attr-defined]
             chart_data = [{"label": c.label, "value": float(c.value)} for c in resp.structured.chart]  # type: ignore[attr-defined]
+        # Chart type: from response field, else infer from task
+        ct = getattr(resp, "chart_type", None)
+        if ct:
+            chart_type_data = str(ct)
+        elif getattr(resp, "structured", None) and resp.structured and getattr(resp.structured, "chart_type", None):  # type: ignore[attr-defined]
+            chart_type_data = str(resp.structured.chart_type)  # type: ignore[attr-defined]
+        else:
+            chart_type_data = "count" if trace_dict.get("task") == "count" else "distribution"
     except Exception:
         chart_data = []
+        chart_type_data = "distribution"
 
-    return resp.answer, conf, trace_dict, evidence_md, chart_data
+    chart_state = {"data": chart_data, "type": chart_type_data}
+
+    return resp.answer, conf, trace_dict, evidence_md, chart_state
 
 
 # ── Gradio UI — 3-zone parity with frontend/src/App.tsx but in Blocks ──
@@ -358,10 +392,10 @@ with gr.Blocks(
             answer = gr.Markdown(label="Answer (bullets)", value="*Awaiting analysis — bullets will appear here*")
             confidence = gr.Number(label="Confidence (0–1)", precision=3)
             evidence = gr.Markdown(label="Evidence")
-            # Chart — identical to React (bar/pie toggle, 62vh panel)
-            chart_type = gr.Radio(choices=["Bar", "Pie"], value="Bar", label="Chart type", info="Bar/Pie toggle for distribution")
+            # Chart — identical to React (bar/pie toggle, question-aware count/distribution)
+            chart_type = gr.Radio(choices=["Bar", "Pie"], value="Bar", label="Chart type", info="Bar/Pie toggle")
             chart_plot = gr.Plot(label="Distribution")
-            chart_state = gr.State(value=[])
+            chart_state = gr.State(value={"data": [], "type": "distribution"})
 
         with gr.Column(scale=2, min_width=320):
             gr.Markdown("### Execution Trace (graded)")
@@ -404,8 +438,8 @@ with gr.Blocks(
         # No GPU, no model load — safe at startup
         return _health_prefilled
 
-    def _update_chart(chart_data: list[dict[str, Any]], chart_type: str):  # type: ignore[no-untyped-def]
-        return _chart_to_plot(chart_data or [], chart_type or "Bar")
+    def _update_chart(chart_state: Any, chart_type: str):  # type: ignore[no-untyped-def]
+        return _chart_to_plot(chart_state or {"data": [], "type": "distribution"}, chart_type or "Bar")
 
     refresh_health.click(fn=_health_gpu, outputs=[health])
     # Initial health load — prefilled, no GPU quota cost
@@ -430,7 +464,7 @@ with gr.Blocks(
     )
 
     clear_btn.click(
-        fn=lambda: (None, None, "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", [], None),
+        fn=lambda: (None, None, "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None),
         inputs=None,
         outputs=[image_a, image_b, query, input_mode, answer, confidence, trace, evidence, chart_state, chart_plot],
     )

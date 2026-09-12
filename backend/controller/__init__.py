@@ -201,6 +201,10 @@ def classify_task(query: str, input_mode: str) -> str:
             return "optical_sar_fusion"
         return "optical_sar_fusion"
 
+    # Question-aware counting: YOLO for count queries (charts = counts, not distribution)
+    if any(k in q for k in ["how many", "count", "number of", "how much"]):
+        return "count"
+
     # Single-image routing by query keywords
     if any(k in q for k in ["where", "locate", "bounding", "ground", "point", "coordinate"]):
         return "grounding"
@@ -210,7 +214,7 @@ def classify_task(query: str, input_mode: str) -> str:
         return "optical_sar_fusion"
 
     # Default: VQA / captioning (stage 1 real adapter)
-    if any(k in q for k in ["describe", "caption", "what", "how many", "is there", "are there", "land cover", "classify"]):
+    if any(k in q for k in ["describe", "caption", "what", "is there", "are there", "land cover", "classify"]):
         return "vqa"
     return "vqa"
 
@@ -311,13 +315,27 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
         total_latency_ms=total_latency,
     )
 
-    # Structured bullets/chart from specialist (parsed markdown)
+    # Structured bullets/chart from specialist (question-aware)
     structured = result.get("_structured")
     chart = result.get("_chart")
+    chart_type_raw = result.get("_chart_type") or (structured.get("chart_type") if isinstance(structured, dict) else None)
     # Normalize to StructuredOutput shape
     structured_obj = None
     chart_list = None
+    chart_type: str | None = None
     try:
+        # Determine chart_type from specialist or task
+        if isinstance(chart_type_raw, str) and chart_type_raw in ("distribution", "count", "change", "none"):
+            chart_type = chart_type_raw
+        elif task == "count":
+            chart_type = "count"
+        elif task in ("change_detection", "change"):
+            chart_type = "change"
+        elif task in ("vqa", "captioning", "visual_question_answering"):
+            chart_type = "distribution"
+        else:
+            chart_type = None
+
         if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
             from backend.schemas import ChartEntry, StructuredOutput
 
@@ -329,7 +347,10 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
                         chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
                     except Exception:
                         continue
-            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries)
+            # Honor chart_type from structured if present
+            if isinstance(structured.get("chart_type"), str):
+                chart_type = structured.get("chart_type")
+            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries, chart_type=chart_type)  # type: ignore
             chart_list = chart_entries
         elif isinstance(chart, list) and chart:
             from backend.schemas import ChartEntry, StructuredOutput
@@ -342,8 +363,13 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
                     except Exception:
                         continue
             if chart_entries:
-                structured_obj = StructuredOutput(bullets=[], chart=chart_entries)
+                structured_obj = StructuredOutput(bullets=[], chart=chart_entries, chart_type=chart_type)  # type: ignore
                 chart_list = chart_entries
+        # If structured still None but we have chart_type, create empty structured for type propagation
+        if structured_obj is None and chart_type is not None:
+            from backend.schemas import StructuredOutput
+
+            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=chart_type)  # type: ignore
     except Exception as e:
         logger.warning("Structured parse failed: %s", e)
 
@@ -354,4 +380,5 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
         evidence=evidence_refs,
         structured=structured_obj,
         chart=chart_list,
+        chart_type=chart_type,  # type: ignore
     )

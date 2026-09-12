@@ -51,13 +51,14 @@ class ExecutionTrace(BaseModel):
 # --- Structured output for bullets/charts (bullets replace paragraph, bar/pie toggle) ---
 
 class ChartEntry(BaseModel):
-    label: str = Field(description="Class label, e.g. forest, urban, water")
-    value: float = Field(ge=0.0, le=100.0, description="Percentage 0-100")
+    label: str = Field(description="Class label, e.g. forest, urban, water or car count")
+    value: float = Field(ge=0.0, le=1000.0, description="Percentage 0-100 or count 0-1000")
 
 
 class StructuredOutput(BaseModel):
     bullets: list[str] = Field(default_factory=list, description="3-6 markdown bullet strings")
-    chart: list[ChartEntry] = Field(default_factory=list, description="2-5 entries for bar/pie, values sum ~100")
+    chart: list[ChartEntry] = Field(default_factory=list, description="2-5 entries for bar/pie")
+    chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
     summary: str | None = Field(default=None, description="Optional one-line summary")
 
 
@@ -70,6 +71,7 @@ class QueryResponse(BaseModel):
     evidence: list[EvidenceRef] = Field(default_factory=list)
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
+    chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
 
 
 class HealthResponse(BaseModel):

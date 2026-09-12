@@ -103,12 +103,22 @@ CHART_SOURCE: str = os.getenv("SATQUERY_CHART_SOURCE", "heuristic").lower()
 CHART_ENABLED: bool = os.getenv("SATQUERY_CHART_ENABLED", "1").lower() not in ("0", "false", "off", "no", "")
 OUTPUT_BULLETS: bool = os.getenv("SATQUERY_BULLETS", "1").lower() not in ("0", "false", "off", "no", "")
 
+# YOLO counting — ultralytics YOLOv8n (COCO 80) default, override for DOTA OBB
+YOLO_WEIGHTS: str = os.getenv("SATQUERY_YOLO_WEIGHTS", "yolov8n.pt")
+YOLO_CONF: float = float(os.getenv("SATQUERY_YOLO_CONF", "0.25"))
+YOLO_IOU: float = float(os.getenv("SATQUERY_YOLO_IOU", "0.45"))
+# Comma-separated class filter for count queries (empty = count all). Override to restrict, e.g. "car,truck"
+YOLO_CLASSES: str | None = os.getenv("SATQUERY_YOLO_CLASSES")
+
 # Task → model routing (registry consults this; controller sets task)
 # Stage 2 (phase2-vrsbench) provides VQA + grounding (VRSBench) via the same QLoRA adapter.
+# Count is now real via YOLO (COCO), vqa remains QLoRA.
 TASK_MODEL_MAP: dict[str, str] = {
     "vqa": "vqa",
     "captioning": "vqa",
     "visual_question_answering": "vqa",
+    "count": "yolo",
+    "counting": "yolo",
     # Stage 2 grounding is now real (same adapter as VQA); change/fusion remain stubbed until stage 3
     "grounding": "vqa",
     "change_detection": "change_stub",

@@ -32,8 +32,9 @@ function EvidenceBadge({ evidence }: { evidence: EvidenceRef }) {
 export default function ResultsPanel({ response }: Props) {
   if (!response) return null;
 
-  // Prefer structured chart if present, else fallback to flat chart
+  // Prefer structured chart if present, else fallback to flat chart — question-aware
   const chart = response.structured?.chart ?? response.chart ?? [];
+  const chartType = response.structured?.chart_type ?? response.chart_type ?? (response.execution_trace?.task === "count" ? "count" : "distribution");
 
   return (
     <div className="space-y-4">
@@ -49,8 +50,8 @@ export default function ResultsPanel({ response }: Props) {
         <span className="text-[10px] text-ink-muted">{response.answer.split(/\s+/).length} words · {response.answer.length} chars</span>
       </div>
 
-      {/* Chart — bar/pie toggle, identical to Gradio */}
-      {chart.length > 0 && <ChartPanel chart={chart} />}
+      {/* Chart — bar/pie toggle, identical to Gradio — question-aware */}
+      {chart.length > 0 && <ChartPanel chart={chart} chartType={chartType} />}
 
       {/* Evidence */}
       {response.evidence.length > 0 && (
