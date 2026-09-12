@@ -42,6 +42,35 @@ from typing import Any
 import gradio as gr
 from PIL import Image
 
+# --- Patch gradio_client bool schema bug (HF Spaces: TypeError: argument of type 'bool' is not iterable) ---
+# gradio JSON schema may emit "additionalProperties": false (bool). gradio_client 1.7.0's
+# utils.get_type / _json_schema_to_python_type assumes dict and crashes in get_api_info().
+# We monkey-patch before any Blocks are built so /api/info no longer 500s.
+try:
+    import gradio_client.utils as _gcu  # type: ignore
+
+    _orig_get_type = _gcu.get_type
+
+    def _safe_get_type(schema):  # type: ignore[no-untyped-def]
+        if isinstance(schema, bool):
+            return "bool" if schema else "Any"
+        if not isinstance(schema, dict):
+            return {}
+        return _orig_get_type(schema)
+
+    _gcu.get_type = _safe_get_type  # type: ignore[method-assign]
+
+    _orig_json = _gcu._json_schema_to_python_type
+
+    def _safe_json(schema, defs=None):  # type: ignore[no-untyped-def]
+        if isinstance(schema, bool):
+            return "bool" if schema else "Any"
+        return _orig_json(schema, defs)
+
+    _gcu._json_schema_to_python_type = _safe_json  # type: ignore[method-assign]
+except Exception:
+    pass
+
 from backend import config as app_config
 from backend.controller import handle as controller_handle
 from backend import registry
