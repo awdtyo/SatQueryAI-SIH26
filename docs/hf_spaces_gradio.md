@@ -1,8 +1,8 @@
 # HF Spaces — Gradio + ZeroGPU (SatQuery AI)
 
-**Image:** `app.py` Gradio `Blocks` on Blackwell `zero-a10g` (`large` = half RTX Pro 6000 `48GB` / `xlarge = 96GB`). `Space Variables: SATQUERY_FORCE_CPU=0` enables real CUDA via `@spaces.GPU(duration=30)` (vs Docker `CPU basic 16GB` `SATQUERY_FORCE_CPU=1`).
+**Image:** `app.py` Gradio `Blocks` on Blackwell `zero-a10g` (`large` = half RTX Pro 6000 `48GB` / `xlarge = 96GB`). `Space Variables: SATQUERY_FORCE_CPU=0` enables real CUDA via `@spaces.GPU(duration=90)` (vs Docker `CPU basic 16GB` `SATQUERY_FORCE_CPU=1`).
 
-Hybrid repo: **Docker stays for local CPU** (`make pitch-demo`, `Dockerfile` `python:3.10-slim` `PORT 7860`), **Spaces runs `app.py`** (`sdk: gradio`, `hardware: zero-a10g`). Same `backend/controller` + `registry` + `Qwen2-VL-2B` `+ PEFT` stack, no HTTP in Space.
+Hybrid repo: **Docker stays for local CPU** (`make pitch-demo`, `Dockerfile` `python:3.12-slim` `PORT 7860`), **Spaces runs `app.py`** (`sdk: gradio`, `hardware: zero-a10g`). Same `backend/controller` + `registry` + `Qwen2-VL-2B` `+ PEFT` stack, no HTTP in Space.
 
 ## 1. Create the Space (Gradio + ZeroGPU)
 
@@ -58,8 +58,8 @@ pinned: false
 
 ## 3. How it works
 
-* `app.py` at module scope can `import spaces` (provided by Gradio base image on `zero-a10g`/`CPU`, no-op locally). Real CUDA only inside `@spaces.GPU(duration=30)` handler (`spaces` emulates CUDA outside, forks worker after).
-* `predict(query, input_mode, image_a, image_b)` `app.py: @spaces.GPU(duration=30)` coerces `gr.Image(type="pil")` → `(filename, bytes)` or `PIL.Image` and calls `backend.controller.handle(query, images, input_mode)` directly (no HTTP, reuses `validate_inputs` + `classify_task` + `registry.predict` + `ExecutionTrace`). Returns `(answer, confidence, trace_json, evidence_md)` to `gr.Textbox/Number/JSON/Markdown`.
+* `app.py` at module scope can `import spaces` (provided by Gradio base image on `zero-a10g`/`CPU`, no-op locally). Real CUDA only inside `@spaces.GPU(duration=90)` handler (`spaces` emulates CUDA outside, forks worker after).
+* `predict(query, input_mode, image_a, image_b)` `app.py: @spaces.GPU(duration=90)` coerces `gr.Image(type="pil")` → `(filename, bytes)` or `PIL.Image` and calls `backend.controller.handle(query, images, input_mode)` directly (no HTTP, reuses `validate_inputs` + `classify_task` + `registry.predict` + `ExecutionTrace`). Returns `(answer, confidence, trace_json, evidence_md)` to `gr.Textbox/Number/JSON/Markdown`.
 * Model: `AutoProcessor` + `Qwen2VLForConditionalGeneration` + `PeftModel.from_pretrained(base, ADAPTER_PATH)` loaded lazily on first `@spaces.GPU` call (ZeroGPU emulation), cached per container. `SATQUERY_FORCE_CPU=0` keeps `device_map="auto"` + `BitsAndBytesConfig NF4 4-bit` `backend/models/vqa.py:121` for ~1.1GB VRAM on `large`.
 
 ## 4. Verify
@@ -95,7 +95,7 @@ make pitch-demo  # bare uvicorn + vite dev, also CPU-only
 
 * **`✗ DEGRADED: Adapter load failed (401)`** → set `HF_TOKEN` in Space Variables.
 * **`RuntimeError: No @spaces.GPU function detected`** → `spaces.GPU` must decorate the `btn.click(fn=predict)` handler itself, not a helper.
-* **`ZeroGPU quota exceeded (60s requested vs 30s left)`** → lower `duration` to `30` (already `app.py: @spaces.GPU(duration=30)`) — visitor quota `5 min/day free, 2 min anon` (`docs/hf_spaces.md` ZeroGPU docs).
+* **`ZeroGPU quota exceeded (60s requested vs 30s left)`** → `predict` uses `@spaces.GPU(duration=90)` for cold pull (warm ~1s), `_health_gpu` stays `30` to save quota; lower `predict` to `30` only if anonymous quota is tight.
 * **`CUDA error: no kernel image is a suitable replacement`** → you added `flash-attn3` (needs `sm_90a/sm_100a`, Blackwell `sm_120` lacks `TMEM`) — don’t add.
 * **`Qwen2VLVideoProcessor requires Torchvision`** → now in `requirements.txt: torchvision>=0.18`, Docker `pip install` includes it.
 * **`ModuleNotFoundError: spaces`** locally → stub handles it; on Space, `spaces` is provided — **do not** `pip install spaces` mismatch (don’t pin `spaces`).
