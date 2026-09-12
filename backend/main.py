@@ -35,7 +35,20 @@ async def lifespan(app: FastAPI):
     if getattr(config, "FORCE_CPU", False):
         logger.info("  COMPUTE      = CPU-ONLY (SATQUERY_FORCE_CPU=1 — GPU/4-bit disabled)")
     else:
-        logger.info("  COMPUTE      = auto (GPU if available, else CPU)")
+        # Auto GPU — report actual availability at startup
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                logger.info(
+                    "  COMPUTE      = AUTO — GPU available (%s x%d) — VLM will run on GPU (4-bit if bitsandbytes present)",
+                    torch.cuda.get_device_name(0),
+                    torch.cuda.device_count(),
+                )
+            else:
+                logger.info("  COMPUTE      = AUTO — no GPU detected, VLM will run on CPU")
+        except Exception:
+            logger.info("  COMPUTE      = auto (GPU if available, else CPU)")
 
     try:
         health = registry.health()

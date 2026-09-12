@@ -55,6 +55,23 @@ def _get_compute_dtype():  # type: ignore[no-untyped-def]
     return torch.float16
 
 
+def _is_gpu_available() -> bool:
+    """Centralized GPU check — respects FORCE_CPU. VLM runs on GPU whenever available."""
+    if getattr(app_config, "FORCE_CPU", False):
+        return False
+    # Prefer config helper if available (keeps single source of truth)
+    if hasattr(app_config, "is_gpu_available"):
+        try:
+            return bool(app_config.is_gpu_available())
+        except Exception:
+            pass
+    return bool(torch is not None and torch.cuda.is_available())
+
+
+def _device_string() -> str:
+    return "cuda" if _is_gpu_available() else "cpu"
+
+
 def _load_model() -> bool:
     """Load base 4-bit quantized + adapter once. Returns True if real model ready."""
     global _model, _processor, _load_error, _load_attempted, _is_real
@@ -88,24 +105,33 @@ def _load_model() -> bool:
                 base_id, trust_remote_code=True, token=hf_token
             )
 
-        # Determine quantization strategy — CPU-only if FORCE_CPU
+        # Determine quantization strategy — GPU whenever available (respects FORCE_CPU)
+        has_cuda = _is_gpu_available()
         raw_has_cuda = bool(torch is not None and torch.cuda.is_available())
-        if app_config.FORCE_CPU and raw_has_cuda:
+        if not has_cuda and raw_has_cuda and getattr(app_config, "FORCE_CPU", False):
             logger.info("VQA: FORCE_CPU=1 — ignoring available CUDA, running on CPU only")
-            has_cuda = False
+        # Log effective device choice for transparency
+        if has_cuda:
+            try:
+                gpu_name = torch.cuda.get_device_name(0) if torch is not None else "cuda"
+                gpu_count = torch.cuda.device_count() if torch is not None else 1
+                logger.info("VQA: GPU detected — %s (count=%d), will load on GPU", gpu_name, gpu_count)
+            except Exception:
+                logger.info("VQA: GPU detected — will load on GPU")
         else:
-            has_cuda = raw_has_cuda
+            logger.info("VQA: no GPU available or FORCE_CPU set — loading on CPU")
+
         has_bnb = True
         try:
             import bitsandbytes  # noqa: F401
         except Exception:
             has_bnb = False
         # FORCE_CPU also disables 4-bit even if bitsandbytes present
-        if app_config.FORCE_CPU:
+        if getattr(app_config, "FORCE_CPU", False):
             has_bnb = False
 
-        # CPU-only: force device_map to cpu to avoid offload_dir dispatch error
-        if app_config.FORCE_CPU:
+        # device_map: auto delegates to GPU when available, cpu forces CPU-only
+        if not has_cuda:
             device_map_value: Any = "cpu"
         else:
             device_map_value = "auto"
@@ -115,7 +141,7 @@ def _load_model() -> bool:
             "token": hf_token,
         }
         # Helpful for large CPU load — allow low-mem and offload to /tmp if still needed
-        if app_config.FORCE_CPU:
+        if not has_cuda:
             model_kwargs["low_cpu_mem_usage"] = True
 
         if has_cuda and has_bnb:
@@ -127,11 +153,13 @@ def _load_model() -> bool:
                 bnb_4bit_compute_dtype=compute_dtype,
             )
             model_kwargs["quantization_config"] = bnb_config
-            logger.info("VQA: using 4-bit NF4 + double_quant (compute=%s)", compute_dtype)
+            logger.info("VQA: using 4-bit NF4 + double_quant on GPU (compute=%s)", compute_dtype)
+        elif has_cuda and not has_bnb:
+            logger.warning("VQA: GPU available but bitsandbytes not installed — loading on GPU without 4-bit quant (fp16)")
+            model_kwargs["torch_dtype"] = _get_compute_dtype()
         else:
-            # CPU fallback or missing bitsandbytes — load in fp16/bf16 without quant
-            reason = "no CUDA" if not has_cuda else "bitsandbytes not available"
-            logger.warning("VQA: %s — loading without 4-bit quant (fp16)", reason)
+            # CPU fallback
+            logger.warning("VQA: loading on CPU without 4-bit quant (fp16) — no CUDA" if not has_cuda else "VQA: loading without 4-bit quant")
             model_kwargs["torch_dtype"] = _get_compute_dtype()
 
         base_model = Qwen2VLForConditionalGeneration.from_pretrained(base_id, **model_kwargs)
@@ -142,7 +170,7 @@ def _load_model() -> bool:
             import tempfile, os
 
             offload_kwargs = {}
-            if app_config.FORCE_CPU:
+            if not has_cuda:
                 tmp_offload = "/tmp/satquery_offload"
                 os.makedirs(tmp_offload, exist_ok=True)
                 offload_kwargs = {"offload_folder": tmp_offload}
@@ -165,21 +193,33 @@ def _load_model() -> bool:
         _model.eval()
         _is_real = True
         _load_error = None
-        # Restrict tensors to CPU if forced — avoids accidental CUDA placement via device_map auto
-        if app_config.FORCE_CPU:
+        # Ensure tensors on correct device — GPU whenever available
+        if not has_cuda:
             try:
                 _model = _model.to("cpu")  # type: ignore[attr-defined]
             except Exception:
                 pass
-        if has_cuda and torch is not None and not app_config.FORCE_CPU:
-            logger.info(
-                "VQA specialist READY — GPU=%s mem=%.1fGB",
-                torch.cuda.get_device_name(0),
-                torch.cuda.memory_allocated() / 1024**3,
-            )
         else:
-            mode = "CPU-ONLY (forced)" if app_config.FORCE_CPU else "CPU mode (no CUDA)"
-            logger.info("VQA specialist READY — %s", mode)
+            # If model landed on CPU despite GPU available (e.g. accelerate fallback), move to GPU
+            try:
+                # PeftModel wraps base; .to("cuda") will dispatch if needed
+                if hasattr(_model, "device") and str(_model.device) == "cpu":
+                    _model = _model.to("cuda")  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        if has_cuda and torch is not None:
+            try:
+                logger.info(
+                    "VQA specialist READY — GPU=%s mem=%.1fGB device_map=%s",
+                    torch.cuda.get_device_name(0),
+                    torch.cuda.memory_allocated() / 1024**3,
+                    device_map_value,
+                )
+            except Exception:
+                logger.info("VQA specialist READY — GPU available, device_map=%s", device_map_value)
+        else:
+            mode = "CPU-ONLY (forced)" if getattr(app_config, "FORCE_CPU", False) else "CPU mode (no CUDA)"
+            logger.info("VQA specialist READY — %s device_map=%s", mode, device_map_value)
         return True
 
     except Exception as e:
@@ -295,15 +335,41 @@ def predict(
         prompt_text = _processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = _processor(text=[prompt_text], images=[image], return_tensors="pt", padding=True)
 
-        # Move to model device
+        # Move to model device — GPU whenever available
         assert torch is not None
-        device = next(_model.parameters()).device if hasattr(_model, "parameters") else torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # For device_map="auto" the device may be meta-dispatch; get from inputs
-        model_device = _model.device if hasattr(_model, "device") else device
-        # Move tensors
+        # Resolve target device: prefer actual model device, else GPU if available, else CPU
+        try:
+            if hasattr(_model, "device"):
+                model_device = _model.device  # type: ignore[attr-defined]
+            else:
+                # Peek first parameter device; handles device_map="auto" sharding
+                model_device = next(_model.parameters()).device  # type: ignore[attr-defined]
+        except Exception:
+            model_device = torch.device("cuda" if _is_gpu_available() else "cpu")
+        # Fallback if model reports cpu but GPU is available (e.g. CPU-only load on GPU machine)
+        if _is_gpu_available() and str(model_device) == "cpu":
+            # Keep cpu model on cpu to avoid OOM copy, but inputs should go where model is
+            # If model is on cpu due to FORCE_CPU, inputs stay cpu; otherwise try cuda
+            if not getattr(app_config, "FORCE_CPU", False):
+                try:
+                    # Verify we can move to cuda
+                    model_device = torch.device("cuda")
+                except Exception:
+                    pass
+        # Move tensors to target device
         for k, v in list(inputs.items()):
             if isinstance(v, torch.Tensor):
-                inputs[k] = v.to(model_device)
+                try:
+                    inputs[k] = v.to(model_device)
+                except Exception:
+                    # Fallback: try cuda explicitly if auto failed
+                    if _is_gpu_available():
+                        try:
+                            inputs[k] = v.to("cuda")
+                        except Exception:
+                            inputs[k] = v.to("cpu")
+                    else:
+                        inputs[k] = v.to("cpu")
 
         # Generate — request scores for logprob-based confidence when available
         with torch.no_grad():
@@ -456,24 +522,44 @@ def get_model_info() -> dict[str, Any]:
     """For /health and startup logging."""
     if not _load_attempted:
         _load_model()
-    has_cuda = bool(torch is not None and torch.cuda.is_available())
+    raw_has_cuda = bool(torch is not None and torch.cuda.is_available())
+    has_cuda = _is_gpu_available()
+    effective_has_cuda = has_cuda  # respects FORCE_CPU, actual dispatch
     try:
         device = str(next(_model.parameters()).device) if _model is not None and hasattr(_model, "parameters") else "unloaded"
+        if hasattr(_model, "device"):
+            try:
+                device = str(_model.device)  # type: ignore[attr-defined]
+            except Exception:
+                pass
     except Exception:
         device = "unloaded"
     # Surface forced CPU so health badge can render correctly
-    if app_config.FORCE_CPU:
+    if getattr(app_config, "FORCE_CPU", False):
         device = "cpu"
         has_cuda = False
+    # Add GPU details when available
+    gpu_name = None
+    gpu_count = 0
+    if raw_has_cuda and torch is not None:
+        try:
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_count = int(torch.cuda.device_count())
+        except Exception:
+            pass
     return {
         "base_model": app_config.BASE_MODEL,
         "adapter_path": app_config.ADAPTER_PATH,
         "is_real": _is_real,
         "load_error": _load_error,
         "device": device,
-        "has_cuda": has_cuda,
-        "force_cpu": app_config.FORCE_CPU,
-        "compute": "cpu-only" if app_config.FORCE_CPU else ("cuda" if has_cuda else "cpu"),
+        "has_cuda": raw_has_cuda,
+        "has_cuda_effective": effective_has_cuda,
+        "force_cpu": getattr(app_config, "FORCE_CPU", False),
+        "compute": "cpu-only" if getattr(app_config, "FORCE_CPU", False) else ("cuda" if effective_has_cuda else "cpu"),
+        "gpu_name": gpu_name,
+        "gpu_count": gpu_count,
+        "compute_dtype": str(_get_compute_dtype()) if torch is not None else None,
     }
 
 

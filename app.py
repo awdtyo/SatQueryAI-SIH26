@@ -67,14 +67,14 @@ if os.getenv("SPACES_ZERO_GPU") == "1":
         except Exception:
             pass
 
-if os.getenv("SATQUERY_FORCE_CPU", "1").lower() in ("0", "false", "off", "no", ""):
+if os.getenv("SATQUERY_FORCE_CPU", "0").lower() in ("0", "false", "off", "no", ""):
     logger.info("Gradio Space: SATQUERY_FORCE_CPU=0 — ZeroGPU CUDA enabled")
 else:
     logger.warning("Gradio Space: SATQUERY_FORCE_CPU still 1 — set Space Variable SATQUERY_FORCE_CPU=0 for ZeroGPU, else model stays on CPU")
 
 # Warm registry health at startup — but NOT on ZeroGPU outside GPU worker (would cache CPU model)
 # On ZeroGPU, health outside GPU would load model on emulated CUDA and cache as CPU, breaking real GPU fork
-_is_zerogpu = os.getenv("SPACES_ZERO_GPU") == "1" or os.getenv("SATQUERY_FORCE_CPU", "1").lower() in ("0", "false", "off", "no", "")
+_is_zerogpu = os.getenv("SPACES_ZERO_GPU") == "1" or os.getenv("SATQUERY_FORCE_CPU", "0").lower() in ("0", "false", "off", "no", "")
 if not _is_zerogpu:
     try:
         h = registry.health()
@@ -126,7 +126,7 @@ def _coerce_gradio_image(img: Any, filename: str | None = None) -> tuple[str | N
     raise ValueError(f"Unsupported Gradio image type: {type(img)}")
 
 
-@spaces.GPU(duration=120)  # ZeroGPU: 120s for first cold pull (4GB base + 80MB adapter), warm ~1-2s; 30s quota-safe but too short for cold
+@spaces.GPU(duration=90)  # ZeroGPU: 90s for first cold pull (4GB base + 80MB adapter), warm ~1-2s; 30s too short for cold, 120 exceeds free quota
 def predict(
     query: str,
     input_mode: str,

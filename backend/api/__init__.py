@@ -22,19 +22,30 @@ router = APIRouter()
 
 @router.get("/health", response_model=HealthResponse, tags=["health"])
 def health() -> dict:
-    # CPU-only mode surfaces explicitly so frontend can render CPU badge
+    # Auto GPU — report effective compute (cuda whenever available unless FORCE_CPU)
     from backend.models import vqa_specialist
 
     vqa_info = vqa_specialist.get_model_info() if hasattr(vqa_specialist, "get_model_info") else {}
+    try:
+        import torch  # type: ignore
+
+        cuda_raw = bool(torch.cuda.is_available())
+        cuda_effective = cuda_raw and not bool(getattr(config, "FORCE_CPU", False))
+    except Exception:
+        cuda_raw = False
+        cuda_effective = False
     return {
         "status": "ok",
         "specialists": registry.health(),
         "base_model": config.BASE_MODEL,
         "adapter_path": config.ADAPTER_PATH,
-        "cuda_available": __import__("torch").cuda.is_available() if _has_torch() else False,
+        "cuda_available": cuda_raw,
+        "cuda_effective": cuda_effective,
         "force_cpu": bool(getattr(config, "FORCE_CPU", False)),
-        "compute": vqa_info.get("compute", "cpu-only" if getattr(config, "FORCE_CPU", False) else "cpu"),
-        "device": vqa_info.get("device", "cpu"),
+        "compute": vqa_info.get("compute", "cpu-only" if getattr(config, "FORCE_CPU", False) else ("cuda" if cuda_effective else "cpu")),
+        "device": vqa_info.get("device", "cuda" if cuda_effective else "cpu"),
+        "gpu_name": vqa_info.get("gpu_name"),
+        "gpu_count": vqa_info.get("gpu_count", 0),
     }
 
 

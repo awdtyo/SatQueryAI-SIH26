@@ -33,7 +33,36 @@ HF_TOKEN: str | None = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
 # Auto GPU when available — VLM runs on CUDA + BitsAndBytes 4-bit if CUDA
 # is present, otherwise falls back to CPU. Set SATQUERY_FORCE_CPU=1 to
 # force CPU-only (e.g. HF Spaces CPU basic, i5/16GB without CUDA).
+# Default is AUTO (0) — GPU is used whenever torch.cuda.is_available().
 FORCE_CPU: bool = os.getenv("SATQUERY_FORCE_CPU", "0").lower() not in ("0", "false", "off", "no", "")
+
+
+def is_gpu_available() -> bool:
+    """True if a CUDA GPU is available and not force-disabled."""
+    if FORCE_CPU:
+        return False
+    try:
+        import torch  # type: ignore
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def get_device() -> str:
+    """Return 'cuda' if GPU available else 'cpu'. Respects FORCE_CPU."""
+    return "cuda" if is_gpu_available() else "cpu"
+
+
+def get_device_count() -> int:
+    try:
+        import torch  # type: ignore
+
+        if is_gpu_available():
+            return int(torch.cuda.device_count())
+    except Exception:
+        pass
+    return 0
 
 # --- Inference knobs (config over hardcoding) ---
 # Processor dynamic resolution caps — same values as training notebook

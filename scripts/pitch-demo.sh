@@ -21,10 +21,23 @@ for arg in "$@"; do
   esac
 done
 
-# --- 1. Env (CPU-only is default per backend/config.py:36) ---
+# --- 1. Env (auto GPU when available — VLM runs on GPU whenever detected) ---
 export SATQUERY_BASE_MODEL="${SATQUERY_BASE_MODEL:-Qwen/Qwen2-VL-2B-Instruct}"
 export SATQUERY_ADAPTER_PATH="${SATQUERY_ADAPTER_PATH:-imadityasarkar/satquery-phase2-vrsbench}"
-export SATQUERY_FORCE_CPU="${SATQUERY_FORCE_CPU:-1}"
+# Auto-detect GPU: default SATQUERY_FORCE_CPU=0 (GPU whenever available), set SATQUERY_FORCE_CPU=1 to force CPU-only
+if [[ -z "${SATQUERY_FORCE_CPU:-}" ]]; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    export SATQUERY_FORCE_CPU="0"
+  elif python3 -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    export SATQUERY_FORCE_CPU="0"
+  else
+    export SATQUERY_FORCE_CPU="0"
+  fi
+else
+  export SATQUERY_FORCE_CPU="${SATQUERY_FORCE_CPU}"
+fi
+# Explicit: if still empty, default to auto GPU (0)
+export SATQUERY_FORCE_CPU="${SATQUERY_FORCE_CPU:-0}"
 export SATQUERY_MAX_NEW_TOKENS="${SATQUERY_MAX_NEW_TOKENS:-256}"
 # HF_TOKEN optional: export HF_TOKEN=hf_xxx if adapter is gated
 if [[ -n "${HF_TOKEN:-}" ]]; then
@@ -87,10 +100,15 @@ pkill -f "vite.*$FRONTEND_PORT" 2>/dev/null || true
 sleep 1
 
 # --- 4. Start backend ---
-echo "→ Starting backend (CPU-ONLY, port $BACKEND_PORT) ..."
+if [[ "$SATQUERY_FORCE_CPU" == "0" ]]; then
+  COMPUTE_LABEL="AUTO (GPU if available, else CPU)"
+else
+  COMPUTE_LABEL="CPU-ONLY (forced)"
+fi
+echo "→ Starting backend ($COMPUTE_LABEL, port $BACKEND_PORT) ..."
 echo "  BASE_MODEL=$SATQUERY_BASE_MODEL"
 echo "  ADAPTER_PATH=$SATQUERY_ADAPTER_PATH"
-echo "  FORCE_CPU=$SATQUERY_FORCE_CPU"
+echo "  FORCE_CPU=$SATQUERY_FORCE_CPU (0=auto GPU, 1=force CPU)"
 mkdir -p /tmp/satquery_offload
 nohup python3 -m uvicorn backend.main:app --host 0.0.0.0 --port "$BACKEND_PORT" > "$BACKEND_LOG" 2>&1 &
 BACKEND_PID=$!
