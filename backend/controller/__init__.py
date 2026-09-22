@@ -203,6 +203,50 @@ def _is_retrieval_query(q: str) -> bool:
     return False
 
 
+# Spectral index keywords — triggers spectral_index agent
+_SPECTRAL_KEYWORDS = [
+    "ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi",
+    "vegetation health", "vegetation index", "show vegetation",
+    "water index", "built-up", "built up", "moisture", "bare soil",
+]
+
+def _is_spectral_query(q: str) -> bool:
+    ql = q.lower()
+    # Explicit index names
+    if any(k in ql for k in ["ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi"]):
+        return True
+    # Phrases that imply index calculation
+    if any(k in ql for k in _SPECTRAL_KEYWORDS):
+        if any(w in ql for w in ["calculate", "show", "find", "display", "compute", "index", "health", "vegetation", "water", "soil", "moisture", "built"]):
+            return True
+    # Compare NDVI between dates
+    if "compare" in ql and "ndvi" in ql:
+        return True
+    return False
+
+
+def parse_spectral_params(query: str) -> dict[str, Any]:
+    """Extract index name from NL query for spectral routing."""
+    q = query.lower()
+    # Direct
+    for cand in ["ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi"]:
+        if cand in q:
+            return {"index": cand.upper(), "intent": "spectral_index"}
+    if "vegetation" in q or "veg " in f" {q} ":
+        return {"index": "NDVI", "intent": "spectral_index"}
+    if "water" in q and "index" in q:
+        return {"index": "NDWI", "intent": "spectral_index"}
+    if "built" in q or "urban" in q:
+        return {"index": "NDBI", "intent": "spectral_index"}
+    if "moisture" in q:
+        return {"index": "NDMI", "intent": "spectral_index"}
+    if "bare soil" in q:
+        return {"index": "BSI", "intent": "spectral_index"}
+    if "soil" in q:
+        return {"index": "SAVI", "intent": "spectral_index"}
+    return {"index": "NDVI", "intent": "spectral_index"}
+
+
 def parse_retrieval_params(query: str) -> dict[str, Any]:
     """
     Lightweight structured param extractor for retrieval queries.
@@ -288,6 +332,10 @@ def classify_task(query: str, input_mode: str) -> str:
     """
     q = (query or "").lower()
     mode = input_mode.lower()
+
+    # Spectral index takes precedence for explicit index queries
+    if _is_spectral_query(query):
+        return "spectral_index"
 
     # Satellite retrieval takes precedence for explicit NL requests (Step 8)
     # Only when query clearly asks to FIND/SEARCH imagery — not generic VQA
@@ -449,6 +497,123 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             total_latency_ms=total_latency,
         )
         # Structured for retrieval: we can pass trace as structured for UI
+        from backend.schemas import StructuredOutput
+
+        structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
+        return QueryResponse(
+            answer=answer,
+            confidence=confidence,
+            execution_trace=trace,
+            evidence=evidence_refs,
+            structured=structured_obj,
+            chart=None,
+            chart_type=None,
+        )
+
+    # Spectral-index path — no image validation, needs scene + AOI
+    if task == "spectral_index":
+        # Retrieve index and scene from params or query
+        spec_params = retrieval_params or {}
+        # Try to parse index from query if not in params
+        parsed = parse_spectral_params(query)
+        index = spec_params.get("index") or spec_params.get("spectral_index") or parsed.get("index") or "NDVI"
+        scene = spec_params.get("scene") or spec_params.get("scene_id") or spec_params.get("satellite_scene")
+        aoi = spec_params.get("aoi") or spec_params.get("geometry") or retrieval_geometry
+        # If still missing scene/AOI, return instructional
+        if not scene or not aoi:
+            total_latency = int((time.time() - t0) * 1000)
+            trace = ExecutionTrace(
+                task=task,
+                models_used=[
+                    ModelTraceEntry(
+                        name="Spectral Index Agent",
+                        role=task,
+                        parameters={"index": index, "error": "missing scene or AOI"},
+                        latency_ms=0,
+                        is_real=True,
+                        is_stub=False,
+                    )
+                ],
+                parameters={"input_mode": input_mode, "image_count": 0, "index": index},
+                confidence=0.35,
+                evidence_refs=[],
+                total_latency_ms=total_latency,
+            )
+            return QueryResponse(
+                answer=f"To calculate {index}, please select a Sentinel-2 scene and draw an AOI. Example: `Calculate NDVI for the selected scene.` (scene + AOI required)",
+                confidence=0.35,
+                execution_trace=trace,
+                evidence=[],
+                structured=None,
+                chart=None,
+                chart_type=None,
+            )
+        # Route to spectral agent
+        specialist = registry.get_specialist(task)
+        specialist_name = getattr(specialist, "__name__", str(specialist))
+        try:
+            model_info = specialist.get_model_info()  # type: ignore
+            model_label = model_info.get("adapter_path") or model_info.get("base_model") or specialist_name
+            is_real = bool(model_info.get("is_real", False))
+            is_stub = bool(model_info.get("stub", False))
+        except Exception:
+            model_label = specialist_name
+            is_real = True
+            is_stub = False
+        invoke_start = time.time()
+        try:
+            import json as _json
+
+            # Pass full scene + AOI + index as JSON query to agent
+            agent_query = _json.dumps({"index": index, "scene": scene, "aoi": aoi, "cloud_mask": spec_params.get("cloud_mask", True)})
+            result = registry.predict([], agent_query, task)
+        except Exception as e:
+            logger.error("Spectral agent failed: %s", e, exc_info=True)
+            result = {"answer": f"Spectral processing failed for {index}: {e}", "evidence": [], "confidence": 0.0, "_latency_ms": int((time.time() - invoke_start) * 1000), "_error": str(e)}
+            is_stub = True
+        latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
+        answer = str(result.get("answer", ""))
+        confidence = float(result.get("confidence", 0.5))
+        confidence = max(0.0, min(1.0, confidence))
+        evidence_raw = result.get("evidence", [])
+        total_latency = int((time.time() - t0) * 1000)
+        evidence_refs: list[EvidenceRef] = []
+        for ev in evidence_raw:
+            try:
+                evidence_refs.append(EvidenceRef(**ev))
+            except Exception:
+                logger.warning("Skipping malformed evidence: %r", ev)
+        # Include spectral trace if present
+        spec_data = result.get("_spectral", {}) if isinstance(result.get("_spectral"), dict) else {}
+        model_entry = ModelTraceEntry(
+            name=model_label if isinstance(model_label, str) else specialist_name,
+            role=task,
+            parameters={
+                "input_mode": input_mode,
+                "image_count": 0,
+                "index": index,
+                "scene_id": spec_data.get("scene_id", str(scene)[:80] if isinstance(scene, str) else getattr(scene, "get", lambda *a, **k: None)("id", "unknown")),
+                "required_bands": spec_data.get("required_bands", []),
+                "cloud_applied": spec_data.get("cloud_applied", False),
+            },
+            latency_ms=latency_ms,
+            is_real=is_real and not bool(result.get("_stub", False)),
+            is_stub=bool(result.get("_stub", False)) or is_stub,
+        )
+        trace = ExecutionTrace(
+            task=task,
+            models_used=[model_entry],
+            parameters={
+                "input_mode": input_mode,
+                "image_count": 0,
+                "index": index,
+                "aoi": aoi,
+                "spectral": spec_data,
+            },
+            confidence=confidence,
+            evidence_refs=evidence_refs,
+            total_latency_ms=total_latency,
+        )
         from backend.schemas import StructuredOutput
 
         structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)

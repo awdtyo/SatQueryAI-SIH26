@@ -31,6 +31,12 @@ try:
 except ImportError:
     satellite_agent = None  # type: ignore
 
+# Spectral-index agent (real Sentinel-2 band math)
+try:
+    from backend.spectral import agent as spectral_agent  # type: ignore
+except ImportError:
+    spectral_agent = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # Registry — task key -> specialist module (each exposes predict + is_real etc)
@@ -67,6 +73,21 @@ if satellite_agent is not None:
         }
     )
 
+# Spectral-index agent (if available)
+if spectral_agent is not None:
+    _REGISTRY.update(
+        {
+            "spectral_index": spectral_agent,
+            "spectral": spectral_agent,
+            "ndvi": spectral_agent,
+            "ndwi": spectral_agent,
+            "ndbi": spectral_agent,
+            "ndmi": spectral_agent,
+            "savi": spectral_agent,
+            "bsi": spectral_agent,
+        }
+    )
+
 # Also respect config.TASK_MODEL_MAP overrides at import time
 # e.g. TASK_MODEL_MAP = {"vqa": "vqa"} -> already covered; but env overrides
 # may map a task to a different registry key.
@@ -75,6 +96,9 @@ _TASK_ALIAS: dict[str, str] = {k.lower(): v for k, v in config.TASK_MODEL_MAP.it
 
 def _normalize_task(task: str) -> str:
     t = task.strip().lower()
+    # Direct spectral aliases
+    if t in ("spectral_index", "spectral", "ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi"):
+        return "spectral_index"
     # Direct satellite aliases
     if t in ("satellite_retrieval", "retrieval", "scene_search", "find_satellite"):
         return "satellite_retrieval"
@@ -95,6 +119,8 @@ def _normalize_task(task: str) -> str:
             return "optical_sar_fusion"
         if mapped in ("satellite_retrieval", "satellite", "retrieval"):
             return "satellite_retrieval"
+        if mapped in ("spectral_index", "spectral", "ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi"):
+            return "spectral_index"
         return mapped
     return t
 
@@ -162,6 +188,11 @@ def list_specialists() -> dict[str, dict[str, Any]]:
             base["satellite_retrieval (real)"] = satellite_agent.get_model_info()  # type: ignore
         except Exception:
             base["satellite_retrieval (real)"] = {"is_real": True}
+    if spectral_agent is not None:
+        try:
+            base["spectral_index (real)"] = spectral_agent.get_model_info()  # type: ignore
+        except Exception:
+            base["spectral_index (real)"] = {"is_real": True}
     return base
 
 
@@ -184,6 +215,8 @@ def preload_all() -> dict[str, bool]:
     }
     if satellite_agent is not None:
         mods["satellite_retrieval"] = satellite_agent
+    if spectral_agent is not None:
+        mods["spectral_index"] = spectral_agent
     results: dict[str, bool] = {}
     for name, mod in mods.items():
         try:

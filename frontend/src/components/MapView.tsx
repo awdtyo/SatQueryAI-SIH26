@@ -1,5 +1,5 @@
 import { useEffect, useRef, useMemo, useCallback } from "react";
-import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, GeoJSON, ImageOverlay, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "leaflet-draw/dist/leaflet.draw.css";
@@ -25,6 +25,14 @@ interface LayerVisibility {
   analysis: boolean;
 }
 
+interface SpectralLayer {
+  preview_b64: string | null;
+  bounds: [[number, number], [number, number]] | null;
+  opacity: number;
+  visible: boolean;
+  index: string;
+}
+
 interface Props {
   aoiGeometry: Record<string, unknown> | null;
   scenes: SatelliteScene[];
@@ -34,18 +42,24 @@ interface Props {
   layerVisibility: LayerVisibility;
   drawMode: DrawMode;
   onDrawModeChange: (mode: DrawMode) => void;
+  spectralLayer?: SpectralLayer | null;
+  onMapClick?: (lat: number, lon: number) => void;
 }
 
-// Helper to fit bounds when aoi/scenes change
-function FitBounds({ aoi, scenes }: { aoi: Record<string, unknown> | null; scenes: SatelliteScene[] }) {
+// Helper to fit bounds when aoi/scenes/spectral change
+function FitBounds({ aoi, scenes, spectralBounds }: { aoi: Record<string, unknown> | null; scenes: SatelliteScene[]; spectralBounds?: [[number, number], [number, number]] | null }) {
   const map = useMap();
   const prevKeyRef = useRef<string>("");
 
   useEffect(() => {
-    const key = JSON.stringify([aoi, scenes.map((s) => s.id).join(",")]);
+    const key = JSON.stringify([aoi, scenes.map((s) => s.id).join(","), spectralBounds]);
     if (key === prevKeyRef.current) return;
     prevKeyRef.current = key;
 
+    if (spectralBounds) {
+      map.fitBounds(spectralBounds, { padding: [20, 20], maxZoom: 13 });
+      return;
+    }
     if (scenes.length > 0) {
       const b = getScenesBounds(scenes);
       if (b) {
@@ -61,8 +75,17 @@ function FitBounds({ aoi, scenes }: { aoi: Record<string, unknown> | null; scene
       }
     }
     // No AOI/scenes: stay at world/India view (initial)
-  }, [aoi, scenes, map]);
+  }, [aoi, scenes, spectralBounds, map]);
 
+  return null;
+}
+
+function MapClickHandler({ onMapClick }: { onMapClick?: (lat: number, lon: number) => void }) {
+  useMapEvents({
+    click(e) {
+      if (onMapClick) onMapClick(e.latlng.lat, e.latlng.lng);
+    },
+  });
   return null;
 }
 
@@ -156,7 +179,7 @@ function DrawHandler({ mode, onAoiChange, onModeChange }: { mode: DrawMode; onAo
   return null;
 }
 
-export default function MapView({ aoiGeometry, scenes, selectedSceneId, onAoiChange, onSceneSelect, layerVisibility, drawMode, onDrawModeChange }: Props) {
+export default function MapView({ aoiGeometry, scenes, selectedSceneId, onAoiChange, onSceneSelect, layerVisibility, drawMode, onDrawModeChange, spectralLayer, onMapClick }: Props) {
   const aoiStyle = useMemo(
     () => ({
       color: "#32D7FF",
@@ -198,8 +221,13 @@ export default function MapView({ aoiGeometry, scenes, selectedSceneId, onAoiCha
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
-        <FitBounds aoi={aoiGeometry} scenes={scenes} />
+        <FitBounds aoi={aoiGeometry} scenes={scenes} spectralBounds={spectralLayer?.visible ? spectralLayer.bounds : null} />
         <DrawHandler mode={drawMode} onAoiChange={onAoiChange} onModeChange={onDrawModeChange} />
+        <MapClickHandler onMapClick={onMapClick} />
+
+        {spectralLayer?.visible && spectralLayer.preview_b64 && spectralLayer.bounds && (
+          <ImageOverlay url={spectralLayer.preview_b64} bounds={spectralLayer.bounds} opacity={spectralLayer.opacity} />
+        )}
 
         {layerVisibility.aoi && aoiGeometry && (
           <GeoJSON
@@ -262,9 +290,10 @@ export default function MapView({ aoiGeometry, scenes, selectedSceneId, onAoiCha
       </div>
 
       {/* Layer visibility indicator */}
-      <div className="absolute top-2 right-2 z-[400] bg-surface-800/95 border border-surface-400/40 rounded-lg px-2 py-1.5 text-[10px] text-ink-muted">
+      <div className="absolute top-2 right-2 z-[400] bg-surface-800/95 border border-surface-400/40 rounded-lg px-2 py-1.5 text-[10px] text-ink-muted max-w-[60%] truncate">
         {aoiGeometry ? "AOI ✓" : "No AOI"} · {scenes.length} scenes
-        {drawMode && <span className="ml-2 text-accent">Drawing {drawMode}… click map</span>}
+        {spectralLayer?.visible && spectralLayer.preview_b64 && <span className="ml-2 text-accent">{spectralLayer.index} ✓</span>}
+        {drawMode && <span className="ml-2 text-accent">Drawing {drawMode}…</span>}
       </div>
     </div>
   );

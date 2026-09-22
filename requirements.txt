@@ -40,15 +40,16 @@ pystac-client>=0.8
 shapely>=2.0
 requests>=2.28
 
+# Spectral index — real Sentinel-2 band math (10m bilinear, SCL cloud mask)
+rasterio>=1.3  # required for spectral GeoTIFF + band alignment (was optional for controller)
+
 # Tests / lint (keep lightweight for CI)
 pytest>=8.0
 httpx>=0.27  # for FastAPI TestClient
 ruff>=0.6
 mypy>=1.10
 
-# Optional: rasterio for full GeoTIFF band validation (controller falls back to PIL if absent)
-# rasterio>=1.3
-# torchvision>=0.18
+# Optional: rasterio already above for spectral (controller fallback if absent still works)
 
 # Training notebooks only (Colab) — NOT installed in backend/Docker, kept here for reference:
 # transformers==4.46.3, peft==0.14.0, accelerate==1.4.0, bitsandbytes==0.45.5,

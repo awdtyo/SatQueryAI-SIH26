@@ -17,6 +17,9 @@ import LayerControl, { type LayerVisibility } from "./components/LayerControl";
 import SceneCards from "./components/SceneCards";
 import SceneMetadataPanel from "./components/SceneMetadataPanel";
 import { isValidGeoJSON } from "./utils/geojson";
+import SpectralPanel from "./components/SpectralPanel";
+import SpectralLegend from "./components/SpectralLegend";
+import { samplePixel, calculateSpectralIndex } from "./api/spectralClient";
 
 type HealthState = {
   status: string;
@@ -39,6 +42,29 @@ function isRetrievalQuery(q: string): boolean {
   if (keywords.some((k) => low.includes(k)) && verbs.some((v) => low.includes(v))) return true;
   if (low.includes("find") && low.includes("imagery")) return true;
   return false;
+}
+
+function isSpectralQuery(q: string): boolean {
+  const low = q.toLowerCase();
+  if (["ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi"].some((k) => low.includes(k))) return true;
+  if (["vegetation health", "vegetation index", "water index", "built-up", "built up", "moisture", "bare soil"].some((k) => low.includes(k)) && ["calculate", "show", "find", "display", "compute", "index"].some((v) => low.includes(v))) return true;
+  return false;
+}
+
+function parseSpectralIndex(q: string): string {
+  const low = q.toLowerCase();
+  if (low.includes("ndvi")) return "NDVI";
+  if (low.includes("ndwi")) return "NDWI";
+  if (low.includes("ndbi")) return "NDBI";
+  if (low.includes("ndmi")) return "NDMI";
+  if (low.includes("savi")) return "SAVI";
+  if (low.includes("bsi") || low.includes("bare soil")) return "BSI";
+  if (low.includes("vegetation")) return "NDVI";
+  if (low.includes("water")) return "NDWI";
+  if (low.includes("built") || low.includes("urban")) return "NDBI";
+  if (low.includes("moisture")) return "NDMI";
+  if (low.includes("soil")) return "SAVI";
+  return "NDVI";
 }
 
 export default function App() {
@@ -69,6 +95,12 @@ export default function App() {
   });
   const [mapMode, setMapMode] = useState<"gis" | "analysis">("gis");
 
+  // Spectral index state
+  const [spectralResult, setSpectralResult] = useState<Record<string, unknown> | null>(null);
+  const [spectralOpacity, setSpectralOpacity] = useState(0.75);
+  const [spectralVisible, setSpectralVisible] = useState(true);
+  const [pixelInspect, setPixelInspect] = useState<{ lat: number; lon: number; value: number | null; loading: boolean; error?: string } | null>(null);
+
   // Poll backend health
   useEffect(() => {
     let cancelled = false;
@@ -90,6 +122,33 @@ export default function App() {
 
   const handleSubmit = useCallback(
     async (query: string) => {
+      // Spectral NL routing — e.g., "Calculate NDVI for this area"
+      if (isSpectralQuery(query)) {
+        if (!selectedScene) {
+          setError({ message: "Please select a Sentinel-2 scene first (click a footprint or card), then ask to calculate an index." });
+          setMapMode("gis");
+          return;
+        }
+        if (!aoiGeometry || !isValidGeoJSON(aoiGeometry)) {
+          setError({ message: "Please draw an AOI on the map before calculating a spectral index." });
+          setMapMode("gis");
+          return;
+        }
+        const idx = parseSpectralIndex(query);
+        setError(null);
+        setGisError(null);
+        try {
+          const res = await calculateSpectralIndex({ index: idx, scene: selectedScene as unknown as Record<string, unknown>, aoi: aoiGeometry, cloud_mask: true });
+          setSpectralResult(res as unknown as Record<string, unknown>);
+          setSpectralVisible(true);
+          setLayerVisibility((prev) => ({ ...prev, analysis: true }));
+          setQueryHistory((prev) => [query, ...prev].slice(0, 20));
+          setMapMode("gis");
+        } catch (err) {
+          setError({ message: `Spectral ${idx} failed`, details: err instanceof Error ? err.message : String(err) });
+        }
+        return;
+      }
       // GIS retrieval via natural language + AOI
       if (isRetrievalQuery(query) && !images.length) {
         if (!aoiGeometry || !isValidGeoJSON(aoiGeometry)) {
@@ -155,7 +214,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [images, inputMode, aoiGeometry]
+    [images, inputMode, aoiGeometry, selectedScene]
   );
 
   const handleAoiChange = useCallback((geom: Record<string, unknown> | null) => {
@@ -185,6 +244,39 @@ export default function App() {
     setGisScenes(scenes);
     setGisTrace(trace);
   }, []);
+
+  const handleSpectralResult = useCallback((res: Record<string, unknown> | null) => {
+    setSpectralResult(res);
+    if (res) {
+      setLayerVisibility((prev) => ({ ...prev, analysis: true }));
+      setSpectralVisible(true);
+      // Ensure map fits to spectral bounds
+    } else {
+      setPixelInspect(null);
+    }
+  }, []);
+
+  const handleMapClick = useCallback(
+    async (lat: number, lon: number) => {
+      if (!spectralResult || !spectralVisible) {
+        setPixelInspect({ lat, lon, value: null, loading: false, error: "No spectral layer active — calculate an index first." });
+        return;
+      }
+      const rasterPath = (spectralResult as { raster_path: string })?.raster_path;
+      if (!rasterPath) {
+        setPixelInspect({ lat, lon, value: null, loading: false, error: "No raster path" });
+        return;
+      }
+      setPixelInspect({ lat, lon, value: null, loading: true });
+      try {
+        const res = await samplePixel(rasterPath, lon, lat);
+        setPixelInspect({ lat, lon, value: res.value, loading: false });
+      } catch (e) {
+        setPixelInspect({ lat, lon, value: null, loading: false, error: e instanceof Error ? e.message : String(e) });
+      }
+    },
+    [spectralResult, spectralVisible]
+  );
 
   return (
     <div className="h-screen flex flex-col bg-surface-900 overflow-hidden">
@@ -231,7 +323,12 @@ export default function App() {
             </div>
           </section>
 
-          <LayerControl visibility={layerVisibility} onChange={setLayerVisibility} hasAnalysis={!!response} hasPreview={!!selectedScene?.thumbnail} />
+          <LayerControl
+            visibility={layerVisibility}
+            onChange={setLayerVisibility}
+            hasAnalysis={!!response || !!spectralResult}
+            hasPreview={!!selectedScene?.thumbnail || !!spectralResult}
+          />
 
           {/* Live Satellite Search - now linked to map via lifted state */}
           <div className="flex-shrink-0">
@@ -253,6 +350,9 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Spectral Index Agent */}
+          <SpectralPanel selectedScene={selectedScene} aoiGeometry={aoiGeometry} onResult={handleSpectralResult} onError={setGisError} />
 
           {queryHistory.length > 0 && (
             <section className="panel flex-shrink-0 flex flex-col max-h-[20vh]">
@@ -292,6 +392,18 @@ export default function App() {
                 layerVisibility={layerVisibility}
                 drawMode={drawMode}
                 onDrawModeChange={setDrawMode}
+                spectralLayer={
+                  spectralResult
+                    ? {
+                        preview_b64: (spectralResult as { preview_b64?: string }).preview_b64 || null,
+                        bounds: (spectralResult as { bounds?: [[number, number], [number, number]] }).bounds || null,
+                        opacity: spectralOpacity,
+                        visible: spectralVisible && layerVisibility.analysis,
+                        index: (spectralResult as { index?: string }).index || "NDVI",
+                      }
+                    : null
+                }
+                onMapClick={handleMapClick}
               />
             </div>
             {/* Map status bar */}
@@ -314,6 +426,48 @@ export default function App() {
                 </button>
               </span>
             </div>
+            {/* Spectral layer controls */}
+            {spectralResult && (
+              <div className="px-3 py-2 border-t border-surface-400/20 bg-surface-800/30 flex flex-col gap-2">
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="font-semibold text-accent">{(spectralResult as { index: string }).index} Layer</span>
+                  <span className="text-ink-muted">{(spectralResult as { stats: { mean: number } }).stats.mean.toFixed(3)} mean · {(spectralResult as { stats: { valid_pct: number } }).stats.valid_pct.toFixed(1)}% valid</span>
+                  <span className="ml-auto flex items-center gap-2">
+                    <label className="flex items-center gap-1 text-[11px] text-ink-muted">
+                      <input type="checkbox" checked={spectralVisible} onChange={(e) => setSpectralVisible(e.target.checked)} className="accent-accent" />
+                      Visible
+                    </label>
+                    <input type="range" min={0} max={100} value={spectralOpacity * 100} onChange={(e) => setSpectralOpacity(parseInt(e.target.value) / 100)} className="w-20" title="Opacity" />
+                    <span className="text-[10px] text-ink-muted">{Math.round(spectralOpacity * 100)}%</span>
+                    <button onClick={() => setSpectralResult(null)} className="px-2 py-1 rounded border border-surface-400/30 text-[11px] text-ink-muted hover:text-signal-red">Remove</button>
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <SpectralLegend
+                    index={(spectralResult as { index: string }).index}
+                    visual={(spectralResult as { visual: Record<string, unknown> }).visual || {}}
+                    interpretation={(spectralResult as { interpretation: Record<string, unknown> }).interpretation || {}}
+                  />
+                </div>
+              </div>
+            )}
+            {/* Pixel inspect */}
+            {pixelInspect && (
+              <div className="px-3 py-1.5 border-t border-surface-400/20 bg-surface-800/50 text-[11px]">
+                {pixelInspect.loading ? (
+                  <span className="text-accent">Sampling pixel…</span>
+                ) : pixelInspect.error ? (
+                  <span className="text-signal-red">{pixelInspect.error}</span>
+                ) : (
+                  <span className="text-ink">
+                    Pixel: <span className="font-mono">{pixelInspect.lat.toFixed(5)}, {pixelInspect.lon.toFixed(5)}</span> →{" "}
+                    <span className="font-semibold text-accent">{pixelInspect.value != null ? (pixelInspect.value as number).toFixed(3) : "nodata/masked"}</span>
+                    {spectralResult && <span className="text-ink-muted"> · {(spectralResult as { index: string }).index} · {(spectralResult as { scene_id: string }).scene_id.slice(0, 20)}</span>}
+                  </span>
+                )}
+                <button onClick={() => setPixelInspect(null)} className="ml-2 text-[10px] text-ink-muted hover:text-ink">Dismiss</button>
+              </div>
+            )}
           </section>
 
           {/* Scene cards below map - synced */}
