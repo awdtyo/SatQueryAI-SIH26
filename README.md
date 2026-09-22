@@ -202,6 +202,65 @@ CDSE STAC search (pystac-client → HTTP fallback) collections=["sentinel-2-l2a"
    ↓  frontend “Select for Analysis” → existing agents (future: retrieve_scene_assets)
 ```
 
+### Live Retrieval — Detailed Flowchart
+
+```mermaid
+flowchart TD
+    A[User: Natural Language<br/>Find Sentinel-2 imagery for this AOI<br/>from 2026-06-01 to 2026-06-30<br/>with &lt;20% cloud] --> B[Frontend SatelliteSearchPanel<br/>AOI presets + GeoJSON textarea<br/>dates / cloud / max_results / NDVI selector<br/>frontend/src/components/SatelliteSearchPanel.tsx]
+
+    B --> C[Planner: parse_retrieval_params<br/>backend/controller/__init__.py:282<br/>sensor/product/dates/cloud/required_bands<br/>LLM → structured params<br/>never raw STAC URLs]
+
+    C --> D{Validation<br/>RetrievalRequest<br/>backend/satellite/models.py}
+    D -- invalid dates / cloud 0-100<br/>geometry GeoJSON / sensor-product --> D1[422 Error<br/>no traceback]
+    D -- valid --> E[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>search_satellite_data]
+
+    E --> F{Cache Lookup<br/>TTL 300s / max 128<br/>backend/satellite/cache.py}
+    F -- hit --> G[Return Cached Ranked Scenes]
+    F -- miss --> H[CDSE STAC Client<br/>backend/satellite/client.py]
+    H --> H1[Try pystac-client<br/>Client.open stac.dataspace.copernicus.eu/v1<br/>search collections sentinel-2-l2a<br/>intersects AOI<br/>datetime interval<br/>query eo:cloud_cover lte]
+    H1 -- success --> H3[STAC Items]
+    H1 -- fail --> H2[HTTP Fallback<br/>POST /v1/search<br/>requests]
+    H2 --> H3
+    H3 -- network / 5xx / timeout --> H4[502 Satellite data provider<br/>temporarily unavailable<br/>logged server-side]
+    H3 -- 0 results --> H5[200 count 0<br/>No Sentinel-2 scenes found<br/>for requested AOI and date range]
+
+    H3 --> I[Parse STAC Items → SatelliteScene<br/>id / datetime / platform<br/>collection / processing_level<br/>cloud_cover / geometry / bbox<br/>assets dynamic B02 B03 B04 B08 B11 B12<br/>thumbnail preview<br/>backend/satellite/client.py:_parse_stac_item]
+
+    I --> J[Asset Discovery<br/>collect all available assets<br/>not assumed B02-B12 set<br/>surface hrefs for future retrieve_scene_assets]
+
+    J --> K[AOI Coverage<br/>backend/satellite/coverage.py:18<br/>coverage = intersection scene AOI / AOI *100<br/>shapely make_valid<br/>Feature FeatureCollection unwrap<br/>planar EPSG:4326]
+
+    K --> L[Ranking<br/>backend/satellite/ranking.py:1<br/>coverage_norm=coverage/100<br/>cloud_score=1-cloud/100<br/>temporal_score recent preferred<br/>sensor_score L2A 1.0 L1C 0.9<br/>selection_score 0.45cov+0.35cloud+0.15temp+0.05sensor<br/>sorted score desc coverage desc<br/>cloud asc datetime desc]
+
+    L --> M[Ranked Scenes + Best Scene<br/>best = max selection_score<br/>coverage + score annotated]
+
+    G --> M
+    M --> N[Cache Store Ranked List<br/>errors not cached]
+
+    N --> O[Trace Build<br/>agent satellite_retrieval<br/>operation search<br/>provider CDSE collection sentinel-2-l2a<br/>results_found / results_after_filtering<br/>selected_scene latency_ms parameters<br/>ExecutionTrace models_used]
+
+    O --> P[API Response POST /api/satellite/search<br/>backend/api/satellite.py<br/>count scenes best_scene<br/>provider collection query<br/>trace + execution_trace]
+
+    P --> Q[Frontend Render<br/>Ranked cards thumbnail date<br/>platform cloud coverage score<br/>assets list<br/>Best highlighted]
+
+    Q --> R{User Action}
+    R --> R1[Select for Analysis<br/>stores SatelliteScene<br/>banner Selected Scene]
+    R1 --> S[Downstream SatQuery Agents<br/>existing pipeline<br/>VQA / Change / Counting / Fusion<br/>future retrieve_scene_assets scene_id<br/>requested_assets B04 B08 for NDVI]
+
+    S --> T[Execution Trace UI<br/>Retrieval Trace panel<br/>CDSE STAC results_found<br/>selected_scene latency<br/>graded trace]
+
+    D1 --> T
+    H4 --> T
+    H5 --> T
+
+    style E fill:#0ea5e9,stroke:#0284c7,color:#fff
+    style H fill:#1e293b,stroke:#334155,color:#e2e8f0
+    style L fill:#22c55e,stroke:#16a34a,color:#fff
+    style S fill:#a78bfa,stroke:#7c3aed,color:#fff
+```
+
+*Figure: End-to-end Live Retrieval from NL query → CDSE STAC → coverage/ranking → best scene → existing analysis. Cache checked before network; `pystac-client` tried first then HTTP `POST /v1/search`; errors map to 422/502/200-empty without tracebacks. Scores are a **selection heuristic** (coverage 45%, cloud 35%, temporal 15%, sensor 5%), not a scientific QA metric. See `backend/satellite/*.py` for isolated, testable units.*
+
 ### Supported filters (MVP: Sentinel-2 L2A)
 * **Sensor/Product:** `sentinel-2` + `l2a` → `sentinel-2-l2a` (also `l1c`; S1/Landsat extensible via `COLLECTION_MAP` `backend/satellite/models.py:14`)
 * **Spatial:** GeoJSON `Polygon`/`MultiPolygon` EPSG:4326 validated via shapely; Feature/FeatureCollection unwrapped
