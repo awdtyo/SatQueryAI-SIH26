@@ -154,7 +154,7 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 
 ---
 
-## How It Works — Detailed Pipeline Flowchart
+## How It Works — Pipeline Flowchart
 
 ```mermaid
 flowchart TD
