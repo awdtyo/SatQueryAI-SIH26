@@ -94,7 +94,7 @@ A naive VLM that skips validation or trace **fails the SIH criteria. Our control
 
 ## Vision-Language: Qwen2-VL + QLoRA
 
-We use **Qwen2-VL-2B-Instruct** — the largest VLM that fits a free **Colab T4 (15GB, sm_75, fp16)** — adapted with **QLoRA (4-bit NF4 + LoRA r=16 α=32, ~14M trainable 0.7%)**:
+We use **Qwen2-VL-2B-Instruct** — the largest VLM to fine tune on **Colab T4 (15GB, sm_75, fp16)** — adapted with **QLoRA (4-bit NF4 + LoRA r=16 α=32, ~14M trainable 0.7%)**:
 
 ```
 Qwen2-VL-2B (frozen, NF4) + LoRA adapters → PeftModel.from_pretrained(base, ADAPTER_PATH)
@@ -103,7 +103,7 @@ Processor: AutoProcessor(min 256*28*28 max 512*28*28) → apply_chat_template �
 
 No full fine-tuning, no 7B+ model — same math as flown adapters on the Hub. `2B` is a feature, not a limit.
 
-### Specialist Roster (current)
+### Specialist Roster 
 
 | Specialist | Module | Adapter / Weight | Status | Task keys |
 |---|---|---|---|---|
