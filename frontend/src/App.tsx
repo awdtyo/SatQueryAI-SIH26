@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import type { InputMode, QueryResponse, UploadedImage, AppError } from "./types/api";
+import type { SatelliteScene } from "./types/satellite";
 import { submitQuery, checkHealth } from "./api/mockClient";
 import Header from "./components/Header";
 import ImageUploader from "./components/ImageUploader";
@@ -9,6 +10,7 @@ import ResultsPanel from "./components/ResultsPanel";
 import ExecutionTracePanel from "./components/ExecutionTrace";
 import ConfidenceGauge from "./components/ConfidenceGauge";
 import LoadingOverlay from "./components/LoadingOverlay";
+import SatelliteSearchPanel from "./components/SatelliteSearchPanel";
 
 type HealthState = {
   status: string;
@@ -27,6 +29,9 @@ export default function App() {
   const [error, setError] = useState<AppError | null>(null);
   const [queryHistory, setQueryHistory] = useState<string[]>([]);
   const [health, setHealth] = useState<HealthState>(null);
+  const [selectedScene, setSelectedScene] = useState<SatelliteScene | null>(null);
+  const [satelliteTrace, setSatelliteTrace] = useState<Record<string, unknown> | null>(null);
+  const [showSatellite, setShowSatellite] = useState(true);
 
   // Poll backend health for CPU badge + system status
   useEffect(() => {
@@ -102,7 +107,7 @@ export default function App() {
       {/* Three-zone workspace */}
       <div className="flex-1 flex min-h-0 p-3 gap-3">
         {/* LEFT: Data Ingestion (~18-20%) */}
-        <div className="w-[280px] flex-shrink-0 flex flex-col gap-3 min-h-0">
+        <div className="w-[280px] flex-shrink-0 flex flex-col gap-3 min-h-0 overflow-y-auto">
           <section className="panel flex-shrink-0">
             <div className="panel-header">
               <span className="panel-label">Imagery Input</span>
@@ -117,9 +122,25 @@ export default function App() {
             </div>
           </section>
 
+          {/* Live Satellite Search */}
+          <div className="flex-shrink-0">
+            <button
+              onClick={() => setShowSatellite(!showSatellite)}
+              className="w-full flex items-center justify-between px-3 py-1.5 bg-surface-800 border border-surface-400/40 rounded-lg text-[11px] font-medium text-ink-secondary hover:text-ink transition-colors"
+            >
+              <span className="tracking-wide">Live Satellite Search</span>
+              <span className="text-[10px] text-ink-muted">{showSatellite ? "Hide" : "Show"} • CDSE</span>
+            </button>
+            {showSatellite && (
+              <div className="mt-2">
+                <SatelliteSearchPanel selectedScene={selectedScene} setSelectedScene={setSelectedScene} onTrace={setSatelliteTrace} />
+              </div>
+            )}
+          </div>
+
           {/* Query history — compact */}
           {queryHistory.length > 0 && (
-            <section className="panel flex-1 min-h-0 flex flex-col">
+            <section className="panel flex-shrink-0 flex flex-col max-h-[22vh]">
               <div className="panel-header">
                 <span className="panel-label">Query Log</span>
                 <span className="tag-muted">{queryHistory.length}</span>
@@ -167,6 +188,35 @@ export default function App() {
 
         {/* RIGHT: Analysis / Telemetry (~22-25%) */}
         <div className="w-[300px] flex-shrink-0 flex flex-col gap-3 min-h-0">
+          {/* Selected scene banner for trace continuity */}
+          {selectedScene && (
+            <section className="panel flex-shrink-0 border-accent/30">
+              <div className="panel-header">
+                <span className="panel-label">Selected Scene</span>
+                <span className="tag-muted truncate max-w-[160px]">{selectedScene.id.slice(0, 22)}…</span>
+              </div>
+              <div className="panel-body space-y-1 text-[11px]">
+                <div className="text-ink-secondary truncate">{selectedScene.datetime ? new Date(selectedScene.datetime).toLocaleString() : "—"}</div>
+                <div className="text-[10px] text-ink-muted">cloud {selectedScene.cloud_cover?.toFixed(1) ?? "—"}% • coverage {selectedScene.coverage?.toFixed(1) ?? "—"}% • score {selectedScene.selection_score?.toFixed(3) ?? "—"}</div>
+                <div className="text-[10px] text-ink-muted">→ Ready for VQA / Change / Counting (assets via scene.assets)</div>
+                <button onClick={() => setSelectedScene(null)} className="text-[10px] text-signal-red/70 hover:text-signal-red">Clear</button>
+              </div>
+            </section>
+          )}
+          {/* Satellite trace (when no QueryResponse yet) */}
+          {satelliteTrace && !response && (
+            <section className="panel flex-shrink-0">
+              <div className="panel-header">
+                <span className="panel-label">Retrieval Trace</span>
+              </div>
+              <div className="panel-body text-[10px] font-mono text-ink-muted break-words">
+                <div>provider: CDSE</div>
+                <div>collection: {String((satelliteTrace as Record<string, unknown>)?.["collection"] ?? "sentinel-2-l2a")}</div>
+                <div>results: {String((satelliteTrace as Record<string, unknown>)?.["results_found"] ?? (satelliteTrace as Record<string, unknown>)?.["resultsFound"] ?? "—")}</div>
+                <div>best: {String((satelliteTrace as Record<string, unknown>)?.["selected_scene"] ?? "—")}</div>
+              </div>
+            </section>
+          )}
           <ExecutionTracePanel trace={response?.execution_trace ?? null} />
 
           {/* Confidence — always visible when response exists */}

@@ -25,6 +25,12 @@ from backend.models import (
     yolo as yolo_specialist,
 )
 
+# Satellite retrieval agent (CDSE STAC) — real, no model weights, API-backed
+try:
+    from backend.satellite import agent as satellite_agent  # type: ignore
+except ImportError:
+    satellite_agent = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # Registry — task key -> specialist module (each exposes predict + is_real etc)
@@ -50,6 +56,17 @@ _REGISTRY: dict[str, Any] = {
     "sar": fusion_specialist,
 }
 
+# Satellite retrieval agent (if available)
+if satellite_agent is not None:
+    _REGISTRY.update(
+        {
+            "satellite_retrieval": satellite_agent,
+            "retrieval": satellite_agent,
+            "scene_search": satellite_agent,
+            "find_satellite": satellite_agent,
+        }
+    )
+
 # Also respect config.TASK_MODEL_MAP overrides at import time
 # e.g. TASK_MODEL_MAP = {"vqa": "vqa"} -> already covered; but env overrides
 # may map a task to a different registry key.
@@ -58,6 +75,9 @@ _TASK_ALIAS: dict[str, str] = {k.lower(): v for k, v in config.TASK_MODEL_MAP.it
 
 def _normalize_task(task: str) -> str:
     t = task.strip().lower()
+    # Direct satellite aliases
+    if t in ("satellite_retrieval", "retrieval", "scene_search", "find_satellite"):
+        return "satellite_retrieval"
     # Check alias via config first
     if t in _TASK_ALIAS:
         mapped = _TASK_ALIAS[t]
@@ -73,6 +93,8 @@ def _normalize_task(task: str) -> str:
             return "change_detection"
         if mapped in ("fusion_stub", "fusion", "optical_sar_fusion"):
             return "optical_sar_fusion"
+        if mapped in ("satellite_retrieval", "satellite", "retrieval"):
+            return "satellite_retrieval"
         return mapped
     return t
 
@@ -128,13 +150,19 @@ def list_specialists() -> dict[str, dict[str, Any]]:
         info = mod.get_model_info() if hasattr(mod, "get_model_info") else {}
         out[task] = info
     # Add a human-friendly summary keyed by specialist name
-    return {
+    base = {
         "vqa (real)": vqa_specialist.get_model_info(),
         "yolo (real)": yolo_specialist.get_model_info(),
         "grounding (real)": grounding_specialist.get_model_info(),
         "change_detection (real)": change_specialist.get_model_info(),
         "optical_sar_fusion (real)": fusion_specialist.get_model_info(),
     }
+    if satellite_agent is not None:
+        try:
+            base["satellite_retrieval (real)"] = satellite_agent.get_model_info()  # type: ignore
+        except Exception:
+            base["satellite_retrieval (real)"] = {"is_real": True}
+    return base
 
 
 def health() -> dict[str, Any]:
@@ -147,14 +175,17 @@ def health() -> dict[str, Any]:
 
 def preload_all() -> dict[str, bool]:
     """Eagerly load all specialists at startup (only VQA does real work)."""
-    results: dict[str, bool] = {}
-    for name, mod in {
+    mods: dict[str, Any] = {
         "vqa": vqa_specialist,
         "yolo": yolo_specialist,
         "grounding": grounding_specialist,
         "change": change_specialist,
         "fusion": fusion_specialist,
-    }.items():
+    }
+    if satellite_agent is not None:
+        mods["satellite_retrieval"] = satellite_agent
+    results: dict[str, bool] = {}
+    for name, mod in mods.items():
         try:
             if hasattr(mod, "preload"):
                 results[name] = bool(mod.preload())
