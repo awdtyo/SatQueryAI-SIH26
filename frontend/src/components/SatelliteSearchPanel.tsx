@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { searchSatellite, type SatelliteSearchParams } from "../api/satelliteClient";
 import type { SatelliteScene } from "../types/satellite";
+import { isValidGeoJSON } from "../utils/geojson";
 
 const PRESET_AOIS: Record<string, Record<string, unknown>> = {
   Bengaluru: {
@@ -21,9 +22,14 @@ interface Props {
   selectedScene: SatelliteScene | null;
   setSelectedScene: (s: SatelliteScene | null) => void;
   onTrace?: (trace: Record<string, unknown> | null) => void;
+  // GIS sync props (optional for backward compat)
+  aoiGeometry?: Record<string, unknown> | null;
+  onAoiChange?: (geom: Record<string, unknown> | null) => void;
+  scenes?: SatelliteScene[];
+  onScenesChange?: (scenes: SatelliteScene[], trace: Record<string, unknown> | null) => void;
 }
 
-export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, onTrace }: Props) {
+export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, onTrace, aoiGeometry, onAoiChange, scenes: externalScenes, onScenesChange }: Props) {
   const [aoiName, setAoiName] = useState("Bengaluru");
   const [geometryText, setGeometryText] = useState(JSON.stringify(PRESET_AOIS["Bengaluru"], null, 2));
   const [startDate, setStartDate] = useState("2026-06-01");
@@ -39,10 +45,46 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
   const [bestId, setBestId] = useState<string | null>(null);
   const [trace, setTrace] = useState<Record<string, unknown> | null>(null);
 
+  // Sync external AOI -> internal text (for map drawing)
+  useEffect(() => {
+    if (aoiGeometry && isValidGeoJSON(aoiGeometry)) {
+      const text = JSON.stringify(aoiGeometry, null, 2);
+      // Avoid loop if same
+      if (text !== geometryText) setGeometryText(text);
+      // Try to detect preset match
+      const match = Object.entries(PRESET_AOIS).find(([, g]) => JSON.stringify(g) === JSON.stringify(aoiGeometry));
+      if (match) setAoiName(match[0]);
+      else setAoiName("Custom");
+    }
+  }, [aoiGeometry]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync external scenes -> internal (for map sync)
+  useEffect(() => {
+    if (externalScenes !== undefined) {
+      setScenes(externalScenes);
+      setBestId(externalScenes[0]?.id ?? null);
+    }
+  }, [externalScenes]);
+
+  // Notify parent when internal geometry changes via textarea/preset
+  const notifyAoiChange = (text: string) => {
+    if (!onAoiChange) return;
+    try {
+      const geom = JSON.parse(text);
+      if (isValidGeoJSON(geom)) onAoiChange(geom);
+    } catch {
+      // Invalid JSON - don't notify
+    }
+  };
+
   const handlePreset = (name: string) => {
     setAoiName(name);
     const g = PRESET_AOIS[name];
-    if (g) setGeometryText(JSON.stringify(g, null, 2));
+    if (g) {
+      const text = JSON.stringify(g, null, 2);
+      setGeometryText(text);
+      if (onAoiChange) onAoiChange(g);
+    }
   };
 
   const handleSearch = async () => {
@@ -54,6 +96,13 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
       setError(`Invalid GeoJSON: ${String(e)}`);
       return;
     }
+    if (!isValidGeoJSON(geom)) {
+      setError("Invalid AOI geometry: must be a valid Polygon/MultiPolygon with [lon, lat] coordinates.");
+      return;
+    }
+    // Notify map of latest geometry
+    if (onAoiChange) onAoiChange(geom);
+
     const params: SatelliteSearchParams = {
       geometry: geom,
       start_date: startDate,
@@ -64,7 +113,6 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
       max_results: maxResults,
       required_analysis: requiredAnalysis || undefined,
     };
-    // Auto-fill bands for analysis
     if (requiredAnalysis) {
       const map: Record<string, string[]> = { NDVI: ["B04", "B08"], NDWI: ["B03", "B08"], NDBI: ["B08", "B11"] };
       params.required_bands = map[requiredAnalysis.toUpperCase()];
@@ -74,16 +122,21 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
       const res = await searchSatellite(params);
       setScenes(res.scenes || []);
       setBestId(res.best_scene?.id || (res.scenes[0]?.id ?? null));
-      setTrace(res.trace || res.execution_trace || null);
-      if (onTrace) onTrace(res.execution_trace || res.trace || null);
-      if (res.count === 0) setError("No Sentinel-2 scenes found for the requested AOI and date range.");
+      const t = res.trace || res.execution_trace || null;
+      setTrace(t);
+      if (onTrace) onTrace(t);
+      if (onScenesChange) onScenesChange(res.scenes || [], t);
+      if (res.count === 0) setError("No Sentinel-2 scenes found for this AOI and date range.");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setScenes([]);
+      if (onScenesChange) onScenesChange([], null);
     } finally {
       setLoading(false);
     }
   };
+
+  const displayedScenes = externalScenes !== undefined ? externalScenes : scenes;
 
   return (
     <section className="panel flex flex-col min-h-0">
@@ -108,11 +161,15 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
           </div>
           <textarea
             value={geometryText}
-            onChange={(e) => setGeometryText(e.target.value)}
+            onChange={(e) => {
+              setGeometryText(e.target.value);
+              notifyAoiChange(e.target.value);
+            }}
             rows={5}
             className="w-full bg-surface-900 border border-surface-400/40 rounded px-2 py-1.5 text-[11px] font-mono text-ink-secondary focus:outline-none focus:border-accent/50"
             placeholder='{"type":"Polygon","coordinates":[[[lon,lat],...]]}'
           />
+          <div className="text-[10px] text-ink-muted mt-1">Draw on map or paste GeoJSON. Validated before search. Coordinates are [lon, lat].</div>
         </div>
 
         <div className="grid grid-cols-2 gap-2">
@@ -178,11 +235,11 @@ export default function SatelliteSearchPanel({ selectedScene, setSelectedScene, 
         )}
 
         {/* Results */}
-        {scenes.length > 0 && (
+        {displayedScenes.length > 0 && (
           <div className="space-y-2">
-            <div className="text-[11px] font-medium text-ink-muted uppercase tracking-wide">Results ({scenes.length}) — ranked by selection_score</div>
+            <div className="text-[11px] font-medium text-ink-muted uppercase tracking-wide">Results ({displayedScenes.length}) — ranked by selection_score · Map ↔ cards synced</div>
             <div className="space-y-2 max-h-[28vh] overflow-y-auto pr-1">
-              {scenes.map((s) => (
+              {displayedScenes.map((s) => (
                 <div
                   key={s.id}
                   className={`border rounded-lg overflow-hidden transition-colors ${bestId === s.id ? "border-accent/50 bg-accent/5" : "border-surface-400/30 bg-surface-800/40"} ${selectedScene?.id === s.id ? "ring-1 ring-accent" : ""}`}
