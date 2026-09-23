@@ -709,19 +709,27 @@ Same `Blocks` in `app.py:367` with `Refresh health` (`@spaces.GPU` on demand, no
 mvp/
 ├── app.py                          # Gradio + ZeroGPU (HF) — @spaces.GPU reuses backend/controller + spectral search
 ├── backend/
-│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist, mounts /api/satellite + /api/analysis
+│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist, mounts /api + /api/satellite + /api/analysis
 │   ├── config.py                   # BASE_MODEL / ADAPTER_PATH / CHANGE/FUSION/YOLO/spectral knobs
 │   ├── registry.py                 # task → specialist (only importer, now 7 agents: VQA/YOLO/change/fusion/satellite/spectral)
 │   ├── controller/__init__.py      # validate_inputs, classify_task (satellite + spectral), handle → ExecutionTrace
-│   ├── models/                     # VQA/YOLO/change/fusion/grounding (as before)
+│   ├── core/assets.py              # 🆕 Unified SatelliteAsset (source_type upload/live, never hallucinates metadata, hash/provenance)
+│   ├── ingestion/                  # 🆕 Upload/raster/live ingestion: image.py (JPG/PNG/TIFF/JP2 validation), raster.py (rasterio metadata without full load), live.py (STAC → Asset)
+│   ├── agents/planner.py           # 🆕 Deterministic Agentic Planner (intent→specialists, pair/band/live needs, rule-based, LLM-extensible)
+│   ├── agents/specialists/         # 🆕 Specialist interface: base.py (can_handle/run/evidence), registry.py, vqa/spectral/change/counting wrappers
+│   ├── evidence/                   # 🆕 Evidence grounding: models.py (typed evidence), fusion.py (agreement/conflicts, no forced consensus)
+│   ├── provenance/                 # 🆕 Provenance: record.py (run_id, timestamp, assets, plan, specialists, evidence, graph)
+│   ├── session/                    # 🆕 Conversational state: in-memory session store (upload once, ask many)
+│   ├── api/analyze.py              # 🆕 Unified /api/analyze + /api/analysis/{run_id}[/trace|/provenance] (session-aware)
+│   ├── models/                     # VQA/YOLO/change/fusion/grounding (VQA/change/fusion now with PEFT key_mapping fix for language_model)
 │   ├── satellite/                  # Live CDSE STAC: client, models, coverage, ranking, cache, agent
-│   ├── spectral/                   # 🆕 Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
-│   ├── scene/                      # 🆕 Selected-Satellite-Image mode: raster.py (resolve B04/B03/B02 → RGB PIL + leaflet bounds)
+│   ├── spectral/                   # Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
+│   ├── scene/                      # Selected-Satellite-Image mode: raster.py (resolve B04/B03/B02 → RGB PIL + leaflet bounds)
 │   ├── schemas/__init__.py         # ExecutionTrace graded contract
 │   ├── api/
 │   │   ├── __init__.py             # /health + /query
 │   │   ├── satellite.py            # POST /api/satellite/search + /health + /assets
-│   │   └── spectral.py             # 🆕 POST /api/analysis/spectral-index + /pixel + /indices
+│   │   └── spectral.py             # POST /api/analysis/spectral-index + /pixel + /indices
 │   └── utils/chart.py              # heuristic chart (measured, not LLM)
 ├── frontend/
 │   ├── src/
@@ -736,7 +744,7 @@ mvp/
 │   ├── notebooks/                  # satquery_ai_qlora_finetune.ipynb + vrsbench_rsvqa_sft.ipynb + cdvqa_change_sft.ipynb
 │   └── configs/                    # bigearthnet_stage1.json, vrsbench_rsvqa_stage2.json, cdvqa_stage3.json
 ├── data/loaders/                   # dataset-specific loaders
-├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py, test_scene_query.py
+├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py, test_scene_query.py, test_agentic.py (SatelliteAsset/planner/spectral RGB->NDVI/evidence/provenance)
 ├── docs/
 │   ├── execution_trace_schema.md
 │   ├── hf_spaces.md
@@ -747,6 +755,52 @@ mvp/
 ├── requirements.txt                # inference + gradio + torchvision + ultralytics + rasterio + pystac-client + shapely
 └── assets/banner3.png
 ```
+
+---
+
+## Agentic Earth-Observation System (New)
+
+**Vision:** *An agentic Earth-observation reasoning system that transforms satellite imagery into evidence-grounded answers using specialized EO models and traceable analysis workflows.*
+
+```
+USER
+ ├─ Uploaded imagery ─┐
+ └─ Live satellite retrieval (CDSE STAC) ─┤
+                    Image/Asset Ingestion (backend/ingestion)
+                              ↓
+                    Unified SatelliteAsset (backend/core/assets.py)
+                              ↓
+                    Agentic Planner (backend/agents/planner.py) — deterministic/rule-based, LLM-extensible
+                              ↓
+        ┌─────────────┬──────────────┬──────────────┐
+        VQA         Spectral       Change        Counting
+     (Qwen2-VL)   (NDVI..BSI)   Detection        (YOLO)
+        └─────────────┴──────────────┴──────────────┘
+                              ↓
+                    Evidence Extraction (backend/evidence)
+                              ↓
+                    Evidence Fusion (agreement/partial/conflict, no forced consensus)
+                              ↓
+                    Provenance (backend/provenance — run_id, timestamp, assets, plan, specialists, evidence, graph)
+                              ↓
+                    Grounded Answer + Evidence + Visualization + ExecutionTrace
+```
+
+**Unified SatelliteAsset** (`backend/core/assets.py`): every input becomes `SatelliteAsset{source_type, filename, format, width/height/channels, bands/band_names, sensor/platform, acquisition_time, crs/resolution/geotransform, cloud_cover/bbox, metadata/provenance, asset_id}`. JPG/PNG uploads populate image properties and mark satellite metadata unknown/null — never hallucinated. GeoTIFF/JP2 extracts raster metadata via `rasterio` without full-array load.
+
+**Ingestion** (`backend/ingestion/`): `image.py` validates ext/MIME/dim/channels/size/corrupt handling (CPU); `raster.py` windowed `MemoryFile` metadata; `live.py` wraps CDSE `SatelliteScene → SatelliteAsset`. Both upload and live enter the same `SatelliteAsset` pipeline.
+
+**Planner** (`backend/agents/planner.py`): deterministic `plan_query(query, assets) → Plan{intent, requires_pair/bands/live, steps[task_id,specialist,action,dependencies,parameters], limitations}`. Examples: `What type of land cover? → VQA→evidence→answer`; `How much vegetation? → inspect bands → spectral if NIR else VQA fallback with "NIR unavailable"`; `What changed? → validate_pair→change→VQA verify→fusion`; `Did urbanization increase and vegetation decrease? → NDBI+NDVI/change+fusion`. No LLM dependency.
+
+**Specialists** (`backend/agents/specialists/`): `base.py` interface `{name, capabilities, can_handle(), run()→SpecialistResult{status, answer, evidence, confidence, limitations, metrics, artifacts}}`; wrappers preserve existing `backend/models/vqa.py` (with `key_mapping` fix `model.layers.→model.language_model.layers.`), `spectral` (only calculates when required bands present, else `status: unsupported, reason: NIR unavailable`), `change` (validates pair, register/align, mask, stats, VQA verify), `counting` (YOLO boxes). Registry delegates via `backend/registry.py`.
+
+**Evidence** (`backend/evidence/`): every specialist emits typed evidence `{image_region, bounding_box, segmentation_mask, change_mask, derived_measurement, metadata, model_output, source_scene, execution_step}`. Fusion combines without forcing agreement; conflicts exposed as `agreement: full|partial|conflict`.
+
+**Provenance** (`backend/provenance/record.py`): each run captures `run_id, timestamp, input_type, asset_id/filename/hash, query, plan, specialists, model names/versions, parameters, derived measurements, evidence, artifacts, answer, limitations/errors` plus graph `INPUT→INGESTION→PLANNER→SPECIALISTS→EVIDENCE→FUSION→ANSWER`. Stored in-memory and via `/api/analysis/{run_id}/provenance`.
+
+**Session** (`backend/session/store.py`): in-memory per-session asset persistence (TTL 4h, 1000 sessions) — upload once, ask multiple questions; pair retained for bi-temporal.
+
+**Hugging Face Space:** `app.py` (Gradio `zero-a10g`, `@spaces.GPU`) is unchanged — remains backup/demo deployment, still serves `ExecutionTrace` alongside new `/api/analyze` FastAPI endpoints. No Gradio→React replacement, no port change, no Azure/GPU requirement.
 
 ---
 

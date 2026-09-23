@@ -165,7 +165,18 @@ def _load_model() -> bool:
             if not has_cuda:
                 os.makedirs("/tmp/satquery_offload", exist_ok=True)
                 offload_kwargs = {"offload_folder": "/tmp/satquery_offload"}
-            _model = PeftModel.from_pretrained(base_model, adapter_id, token=hf_token, **offload_kwargs)
+
+            adapter_key_mapping = {
+                "model.layers.": "model.language_model.layers.",
+            }
+
+            _model = PeftModel.from_pretrained(
+                base_model,
+                adapter_id,
+                token=hf_token,
+                key_mapping=adapter_key_mapping,
+                **offload_kwargs,
+            )
             _is_real = True
             logger.info("Change: adapter loaded from %s", adapter_id)
         except Exception as e:

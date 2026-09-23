@@ -181,7 +181,25 @@ def _load_model() -> bool:
                 tmp_offload = "/tmp/satquery_offload"
                 os.makedirs(tmp_offload, exist_ok=True)
                 offload_kwargs = {"offload_folder": tmp_offload}
-            _model = PeftModel.from_pretrained(base_model, adapter_id, token=hf_token, **offload_kwargs)
+
+            # Adapter was trained against an older Qwen2-VL module layout
+            # (base_model.model.model.layers.*); current model uses
+            # base_model.model.model.language_model.layers.*. PEFT's
+            # load_peft_weights() strips "base_model.model." before applying
+            # key_mapping and auto-inserts adapter name `default`, so mapping
+            # must target stripped key ("model.layers." -> "model.language_model.layers.")
+            # and must NOT include `.default`.
+            adapter_key_mapping = {
+                "model.layers.": "model.language_model.layers.",
+            }
+
+            _model = PeftModel.from_pretrained(
+                base_model,
+                adapter_id,
+                token=hf_token,
+                key_mapping=adapter_key_mapping,
+                **offload_kwargs,
+            )
             # Merge is optional for inference; keep adapter separate for clarity
             _is_real = True
             logger.info("VQA: adapter loaded successfully from %s", adapter_id)
