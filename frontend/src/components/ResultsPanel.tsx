@@ -40,12 +40,16 @@ export default function ResultsPanel({ response }: Props) {
   const chart = Array.isArray(vizData) ? vizData.filter((c: any) => c && typeof c.label === "string" && typeof c.value === "number" && isFinite(c.value)) : [];
   const chartType = vizType;
 
+  const findings = (response as any).findings as Array<{label:string;description:string}> | undefined;
+  const limitations = (response as any).limitations as string[] | undefined;
+  const metrics = (response as any).metrics as Record<string,any> | undefined;
+
   return (
     <div className="space-y-4">
-      {/* Answer — bullets replace paragraph, rendered as markdown */}
+      {/* Answer — detailed natural language */}
       <div>
         <div className="flex items-center gap-2 mb-2">
-          <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Result — bullets</span>
+          <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Answer</span>
           <div className="flex-1 divider" />
         </div>
         <div className="text-[13px] leading-relaxed text-ink font-sans prose prose-invert max-w-none prose-p:my-1 prose-li:my-0.5 prose-ul:ml-4">
@@ -54,8 +58,26 @@ export default function ResultsPanel({ response }: Props) {
         <span className="text-[10px] text-ink-muted">{response.answer.split(/\s+/).length} words · {response.answer.length} chars</span>
       </div>
 
-      {/* Chart — bar/pie toggle, identical to Gradio — question-aware */}
-      {chart.length > 0 && <ChartPanel chart={chart} chartType={chartType} />}
+      {/* Key Findings */}
+      {findings && findings.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em]">Key Findings</span>
+            <div className="flex-1 divider" />
+          </div>
+          <ul className="space-y-1.5">
+            {findings.map((f, i) => (
+              <li key={i} className="flex gap-2 text-[12px] text-ink-secondary">
+                <span className="text-accent mt-0.5">•</span>
+                <span><span className="font-medium text-ink">{f.label}:</span> {f.description}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Chart — always present for successful query via fallback */}
+      {chart.length > 0 && <ChartPanel chart={chart} chartType={chartType} title={vizTitle} />}
 
       {/* Evidence */}
       {response.evidence.length > 0 && (
@@ -74,6 +96,25 @@ export default function ResultsPanel({ response }: Props) {
               <EvidenceBadge key={i} evidence={ev} />
             ))}
           </div>
+        </div>
+      )}
+
+      {/* Limitations */}
+      {limitations && limitations.length > 0 && (
+        <div className="p-2.5 border border-amber-500/20 bg-amber-500/5 rounded-lg">
+          <div className="text-[11px] font-medium text-amber-400 mb-1">Limitations</div>
+          <ul className="space-y-1">
+            {limitations.map((lim, i) => (
+              <li key={i} className="text-[11px] text-ink-secondary">• {lim}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Metrics */}
+      {metrics && Object.keys(metrics).length > 0 && (
+        <div className="text-[10px] text-ink-muted">
+          Metrics: {Object.entries(metrics).map(([k,v]) => `${k}=${String(v).slice(0,40)}`).join(" · ")}
         </div>
       )}
     </div>

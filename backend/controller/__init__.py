@@ -1154,6 +1154,39 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         total_latency_ms=total_latency,
     )
 
+    # Answer synthesis — detailed, evidence-grounded, no hallucination
+    findings: list[dict[str, Any]] = []
+    limitations: list[str] = []
+    metrics: dict[str, Any] = {}
+    artifacts: list[dict[str, Any]] = []
+    try:
+        from backend.synthesis.answer import synthesize_answer
+
+        img_meta: dict[str, Any] = {}
+        if pil_images and len(pil_images) > 0 and hasattr(pil_images[0], "size"):
+            try:
+                w, h = pil_images[0].size  # type: ignore
+                img_meta = {"width": w, "height": h, "channels": len(getattr(pil_images[0], "mode", "RGB"))}
+            except Exception:
+                pass
+        synth = synthesize_answer(query, task, [result], evidence_raw, confidence, img_meta)
+        # Use synthesized answer if it improves over raw
+        synth_answer = str(synth.get("answer", "") or "").strip()
+        if synth_answer and len(synth_answer) > 10 and "did not produce" not in synth_answer.lower():
+            # Only replace if synthesized is not just fallback and adds value
+            if len(synth_answer) > len(answer) or any(k in synth_answer.lower() for k in ["portion", "region", "confidence", "evidence"]):
+                answer = synth_answer
+        findings = synth.get("findings", [])  # type: ignore
+        limitations = synth.get("limitations", [])  # type: ignore
+        metrics = synth.get("metrics", {})  # type: ignore
+        artifacts = synth.get("artifacts", [])  # type: ignore
+        # Merge limitations from synthesis with existing
+        if limitations:
+            # Add to trace parameters for provenance
+            trace.parameters["limitations"] = limitations[:3]
+    except Exception as e:
+        logger.debug(f"Answer synthesis failed: {e}")
+
     # Structured bullets/chart from specialist (question-aware)
     structured_obj, chart_list, chart_type = _build_structured(result, task)
 
@@ -1180,6 +1213,23 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
                 structured_obj.chart_type = None  # type: ignore
         else:
             chart_list = valid_entries
+
+    # For ordinary VQA without quantitative intent, do not use heuristic distribution as primary visualization
+    # Instead force fallback to evidence/metadata (semantic, not invented percentages)
+    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
+        # Keep specialist chart as secondary, but prioritize fallback
+        # Clear candidate so fallback will be used
+        if chart_list is not None and chart_type == "distribution":
+            # Check if chart is heuristic (vegetation/water etc.) — treat as not quantitative
+            heuristic_labels = {"vegetation", "water", "urban", "bare", "other"}
+            if any(c.label.lower() in heuristic_labels for c in chart_list):
+                import logging
+                logging.getLogger(__name__).debug(f"Nullifying heuristic chart for VQA query={query[:40]!r}")
+                chart_list = None
+                chart_type = None  # type: ignore
+                if structured_obj:
+                    structured_obj.chart = []
+                    structured_obj.chart_type = None  # type: ignore
 
     # Visualization fallback pipeline — ensure EVERY successful query has a valid graph
     visualization: dict[str, Any] | None = None
@@ -1248,6 +1298,10 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         confidence=confidence,
         execution_trace=trace,
         evidence=evidence_refs,
+        findings=findings,
+        limitations=limitations,
+        metrics=metrics,
+        artifacts=artifacts,
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
@@ -1436,6 +1490,28 @@ def _handle_active_scene(
         total_latency_ms=total_latency,
     )
 
+    # Answer synthesis for active scene
+    findings: list[dict[str, Any]] = []
+    limitations: list[str] = []
+    metrics: dict[str, Any] = {}
+    artifacts: list[dict[str, Any]] = []
+    try:
+        from backend.synthesis.answer import synthesize_answer
+
+        synth = synthesize_answer(query, task, [result], evidence_raw, confidence, {"width": pil_image.size[0], "height": pil_image.size[1]})
+        synth_answer = str(synth.get("answer", "") or "").strip()
+        if synth_answer and len(synth_answer) > 10 and "did not produce" not in synth_answer.lower():
+            if len(synth_answer) > len(answer) or any(k in synth_answer.lower() for k in ["portion", "region", "confidence"]):
+                answer = synth_answer
+        findings = synth.get("findings", [])  # type: ignore
+        limitations = synth.get("limitations", [])  # type: ignore
+        metrics = synth.get("metrics", {})  # type: ignore
+        artifacts = synth.get("artifacts", [])  # type: ignore
+    except Exception as e:
+        import logging
+
+        logging.getLogger(__name__).debug(f"Answer synthesis (active scene) failed: {e}")
+
     structured_obj, chart_list, chart_type = _build_structured(result, task)
 
     # Strict chart validation
@@ -1507,6 +1583,10 @@ def _handle_active_scene(
         confidence=confidence,
         execution_trace=trace,
         evidence=evidence_refs,
+        findings=findings,
+        limitations=limitations,
+        metrics=metrics,
+        artifacts=artifacts,
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore

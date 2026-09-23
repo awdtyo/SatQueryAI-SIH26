@@ -170,49 +170,33 @@ def build_fallback_visualization(
             candidate_type = chart_type
 
     if candidate_chart:
-        viz = _chart_to_viz(candidate_chart, candidate_type)
-        if viz and validate_visualization(viz):
-            return candidate_chart, candidate_type, viz
+        # For ordinary VQA without quantitative intent, do not use heuristic distribution
+        if task in ("vqa", "captioning", "visual_question_answering"):
+            q_low = (query or "").lower()
+            is_quant = any(k in q_low for k in ["how many", "count", "number of", "chart", "graph", "distribution", "percentage", "percent", "spectral", "ndvi", "ndwi", "ndbi", "ndmi", "savi", "bsi", "nbr", "mndwi", "change", "compare", "plot", "statistic", "histogram", "bar", "pie"])
+            if not is_quant:
+                heuristic_labels = {"vegetation", "water", "urban", "bare", "other"}
+                if any(c.label.lower() in heuristic_labels for c in candidate_chart):
+                    candidate_chart = None
+                    candidate_type = None
+        if candidate_chart:
+            viz = _chart_to_viz(candidate_chart, candidate_type)
+            if viz and validate_visualization(viz):
+                return candidate_chart, candidate_type, viz
 
-    # 2. Specialist metrics
-    metrics = result.get("metrics") or result.get("_metrics") or {}
-    # Also check result top-level numeric fields that are metrics (not coordinates)
-    metric_chart: list[ChartEntry] = []
-    for k in ["confidence", "objects", "count", "changed_pixels", "unchanged_pixels", "changed_area", "score"]:
-        if k in result and isinstance(result[k], (int, float)) and result[k] == result[k]:
-            if -1000 <= result[k] <= 10000:
-                metric_chart.append(ChartEntry(label=k.replace("_", " ").title(), value=float(result[k])))
-    for k, v in metrics.items():
-        if isinstance(v, (int, float)) and v == v and v not in (float("inf"), float("-inf")):
-            if isinstance(v, (list, tuple)):
-                continue
-            if -1000 <= v <= 10000:
-                # Avoid duplicate labels
-                if not any(c.label.lower() == k.lower() for c in metric_chart):
-                    metric_chart.append(ChartEntry(label=str(k).replace("_", " ").title(), value=float(v)))
-    if metric_chart and validate_chart_entries([{"label": e.label, "value": e.value} for e in metric_chart]):
-        viz = _chart_to_viz(metric_chart, "bar", title="Metrics")
-        if viz and validate_visualization(viz):
-            return metric_chart, "distribution", viz
-
-    # Also check confidence even if not in metrics
+    # Also check confidence even if not in metrics — store for later lower priority
+    conf_fallback = None
     if confidence is not None and isinstance(confidence, (int, float)) and confidence == confidence:
-        # But only if it's actual confidence (0-1) and not fabricated 0?
-        # Use it as fallback only if no other metrics
         if 0 <= confidence <= 1 and confidence not in (float("inf"), float("-inf")):
-            # Convert to percentage for display
             conf_chart = [ChartEntry(label="Confidence", value=round(float(confidence) * 100, 1))]
-            viz = _chart_to_viz(conf_chart, "bar", title="Confidence")
-            # Don't return yet — keep as lower priority, continue to evidence
+            try:
+                viz_conf = _chart_to_viz(conf_chart, "bar", title="Confidence")
+                if viz_conf and validate_visualization(viz_conf):
+                    conf_fallback = (conf_chart, "distribution", viz_conf)
+            except Exception:
+                conf_fallback = None
 
-            # Store for later fallback
-            conf_fallback = (conf_chart, "bar", viz)
-        else:
-            conf_fallback = None
-    else:
-        conf_fallback = None
-
-    # 3. Evidence-derived visualization
+    # 3. Evidence-derived visualization (higher priority than generic metrics for VQA)
     # Count evidence by type or label
     if evidence:
         # For bounding boxes, group by label derived from description
@@ -237,8 +221,17 @@ def build_fallback_visualization(
                 if "[" in label or "]" in label:
                     label = "object"
                 label_counts[label] = label_counts.get(label, 0) + 1
-            elif typ in ("image_ref", "coordinate_geometry", "image_region"):
-                # Count image regions
+            elif typ == "coordinate_geometry":
+                # Count actual regions inside coordinates, not just evidence items
+                coords = ev.get("coordinates") or (ev.get("spatial_provenance", {}) or {}).get("input_coordinates") or []
+                if isinstance(coords, list) and len(coords) > 0 and isinstance(coords[0], (list, tuple)):
+                    # Each coordinate pair is a region
+                    label_counts["Regions"] = label_counts.get("Regions", 0) + len(coords)
+                elif isinstance(coords, list) and len(coords) > 0:
+                    label_counts["Regions"] = label_counts.get("Regions", 0) + 1
+                else:
+                    label_counts["Evidence"] = label_counts.get("Evidence", 0) + 1
+            elif typ in ("image_ref", "image_region"):
                 label_counts["Evidence"] = label_counts.get("Evidence", 0) + 1
             elif typ in ("overlay", "heatmap"):
                 label_counts[typ] = label_counts.get(typ, 0) + 1
@@ -259,6 +252,25 @@ def build_fallback_visualization(
                 viz = _chart_to_viz(chart_entries, "bar", title="Objects detected" if any("building" in k.lower() or "vehicle" in k.lower() for k in label_counts) else "Evidence summary")
                 if viz and validate_visualization(viz):
                     return chart_entries, ("count" if task in ("count", "counting") else "distribution"), viz
+
+    # 2b. Specialist metrics (after evidence for VQA, but before metadata for spectral/change)
+    metrics = result.get("metrics") or result.get("_metrics") or {}
+    metric_chart: list[ChartEntry] = []
+    for k in ["objects", "count", "changed_pixels", "unchanged_pixels", "changed_area", "score", "mean_ndvi", "mean", "min", "max"]:
+        if k in result and isinstance(result[k], (int, float)) and result[k] == result[k]:
+            if -1000 <= result[k] <= 10000 and not isinstance(result[k], (list, tuple)):
+                metric_chart.append(ChartEntry(label=k.replace("_", " ").title(), value=float(result[k])))
+    for k, v in metrics.items():
+        if isinstance(v, (int, float)) and v == v and v not in (float("inf"), float("-inf")):
+            if isinstance(v, (list, tuple)):
+                continue
+            if -1000 <= v <= 10000:
+                if not any(c.label.lower() == k.lower() for c in metric_chart):
+                    metric_chart.append(ChartEntry(label=str(k).replace("_", " ").title(), value=float(v)))
+    if metric_chart and validate_chart_entries([{"label": e.label, "value": e.value} for e in metric_chart]):
+        viz = _chart_to_viz(metric_chart, "bar", title="Metrics")
+        if viz and validate_visualization(viz):
+            return metric_chart, "distribution", viz
 
     # 4. Metadata visualization
     # Use pil_images metadata

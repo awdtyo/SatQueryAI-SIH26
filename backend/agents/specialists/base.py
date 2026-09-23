@@ -14,11 +14,13 @@ class SpecialistResult(BaseModel):
     specialist: str
     status: str = Field(description="success|unsupported|error")
     answer: str | None = None
+    findings: list[dict[str, Any]] = Field(default_factory=list, description="Structured observations supporting answer")
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float | None = None
     limitations: list[str] = Field(default_factory=list)
     metrics: dict[str, Any] = Field(default_factory=dict)
     artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    visualization_data: dict[str, Any] | list[dict[str, Any]] | None = Field(default=None, description="Data intended for visualization")
 
     class Config:
         arbitrary_types_allowed = True

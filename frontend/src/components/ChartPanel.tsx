@@ -16,7 +16,7 @@ import type { ChartEntry } from "../types/api";
 
 const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f43f5e", "#14b8a6"];
 
-export default function ChartPanel({ chart, chartType }: { chart: ChartEntry[]; chartType?: string | null }) {
+export default function ChartPanel({ chart, chartType, title: titleProp }: { chart: ChartEntry[]; chartType?: string | null; title?: string | null }) {
   const [mode, setMode] = useState<"bar" | "pie">("bar");
   // Strict validation — only render when chart is array with valid numeric entries
   if (!chart || !Array.isArray(chart) || chart.length === 0) return null;
@@ -32,7 +32,7 @@ export default function ChartPanel({ chart, chartType }: { chart: ChartEntry[]; 
   const isChange = chartType === "change";
   const data = validChart.map((c) => ({ name: c.label, value: c.value }));
 
-  const title = isCount ? "Count" : isChange ? "Change" : "Distribution";
+  const title = titleProp || (isCount ? "Count" : isChange ? "Change" : "Distribution");
   const unit = isCount ? "" : "%";
   const isDistribution = !isCount && !isChange;
   return (

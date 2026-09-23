@@ -91,9 +91,13 @@ class StructuredOutput(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Model confidence if available, else null")
     execution_trace: ExecutionTrace
     evidence: list[EvidenceRef] = Field(default_factory=list)
+    findings: list[dict[str, Any]] = Field(default_factory=list, description="Structured key findings supporting answer")
+    limitations: list[str] = Field(default_factory=list, description="Limitations when relevant")
+    metrics: dict[str, Any] = Field(default_factory=dict, description="Actual numeric measurements")
+    artifacts: list[dict[str, Any]] = Field(default_factory=list, description="Images, masks, overlays")
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
     chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
