@@ -19,8 +19,6 @@ from fastapi.staticfiles import StaticFiles
 
 from backend import config, registry
 from backend.api import router as api_router
-from backend.api.satellite import router as satellite_router
-from backend.api.spectral import router as spectral_router
 
 logger = logging.getLogger("satquery")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -116,8 +114,6 @@ _HAS_FRONTEND = _FRONTEND_DIST.exists() and (_FRONTEND_DIST / "index.html").exis
 
 # Mount order matters: frontend "/" must be registered before root api_router's "/" so "/" serves SPA when dist exists
 app.include_router(api_router, prefix="/api")
-app.include_router(satellite_router, prefix="/api")
-app.include_router(spectral_router, prefix="/api")
 
 if _HAS_FRONTEND:
     assets_dir = _FRONTEND_DIST / "assets"
@@ -135,5 +131,3 @@ else:
 # Also mount at root for direct /health /query (frontend dev proxies /api, but direct calls and HF healthcheck use /health)
 # Registered after frontend "/" so "/" remains SPA, while /health, /query, /docs still resolve to API
 app.include_router(api_router)
-app.include_router(satellite_router)
-app.include_router(spectral_router)

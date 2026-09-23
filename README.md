@@ -94,7 +94,7 @@ A naive VLM that skips validation or trace **fails the SIH criteria. Our control
 
 ## Vision-Language: Qwen2-VL + QLoRA
 
-We use **Qwen2-VL-2B-Instruct** — the largest VLM to fine tune on **Colab T4 (15GB, sm_75, fp16)** — adapted with **QLoRA (4-bit NF4 + LoRA r=16 α=32, ~14M trainable 0.7%)**:
+We use **Qwen2-VL-2B-Instruct** — the largest VLM that fits a free **Colab T4 (15GB, sm_75, fp16)** — adapted with **QLoRA (4-bit NF4 + LoRA r=16 α=32, ~14M trainable 0.7%)**:
 
 ```
 Qwen2-VL-2B (frozen, NF4) + LoRA adapters → PeftModel.from_pretrained(base, ADAPTER_PATH)
@@ -103,7 +103,7 @@ Processor: AutoProcessor(min 256*28*28 max 512*28*28) → apply_chat_template �
 
 No full fine-tuning, no 7B+ model — same math as flown adapters on the Hub. `2B` is a feature, not a limit.
 
-### Specialist Roster 
+### Specialist Roster (current)
 
 | Specialist | Module | Adapter / Weight | Status | Task keys |
 |---|---|---|---|---|
@@ -148,9 +148,8 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 | **Charts / Vision** | **Pillow ≥10**, `numpy<2`, `torchvision ≥0.18`, `matplotlib ≥3.5`, `rasterio` (optional) | `Pillow` for `RGB` conversion, `rasterio` for `.tif` bands, `matplotlib` for Gradio plots |
 | **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, Vite proxy `/api → 8000`, poll `/api/health` every 15s |
 | **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=60)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0` |
-| **Retrieval** | **pystac-client ≥0.8**, **shapely ≥2.0**, **requests ≥2.28**, `CDSE STAC v1` | `sentinel-2-l2a`, AOI coverage, heuristic ranking `backend/satellite/ranking.py:1` |
 | **Training env** | **Google Colab T4** (15GB, sm_75, fp16), fallback Kaggle T4×2 | Free-tier safe: Drive checkpoints, subset caching |
-| **Testing** | `pytest`, `httpx`, `ruff`, `mypy` | `tests/test_controller_api.py`, `tests/test_registry.py`, `tests/test_vqa_wrapper.py`, `tests/test_satellite_retrieval.py` |
+| **Testing** | `pytest`, `httpx`, `ruff`, `mypy` | `tests/test_controller_api.py`, `tests/test_registry.py`, `tests/test_vqa_wrapper.py` |
 
 ---
 
@@ -158,288 +157,30 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 
 ```mermaid
 flowchart TD
-    A[User Input<br/>NL Query + AOI Polygon or 1-2 Images<br/>Find Sentinel-2 2026-06-01 2026-06-30 &lt;20% cloud<br/>or Describe land cover] --> B[Frontend<br/>React 3-zone + Gradio Blocks<br/>ImageryViewer + SatelliteSearchPanel<br/>frontend/src/App.tsx / app.py]
-
-    B --> C[Controller<br/>validate_inputs rasterio PIL<br/>classify_task + parse_retrieval_params<br/>backend/controller/__init__.py:282]
-    C --> D{Task Routing}
-
-    D -->|Find Sentinel-2 / imagery &lt;X% cloud / best image| R1[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>RetrievalRequest validation<br/>sensor product geometry dates cloud]
-    R1 --> R2{Cache TTL 300s<br/>backend/satellite/cache.py}
-    R2 -->|hit| R4[Ranked Scenes]
-    R2 -->|miss| R3[CDSE STAC Client<br/>pystac-client → HTTP fallback<br/>sentinel-2-l2a intersects AOI<br/>datetime interval eo:cloud_cover<br/>backend/satellite/client.py]
-    R3 --> P[Parse STAC → SatelliteScene<br/>id datetime platform cloud geometry bbox<br/>assets B02 B03 B04 B08 B11 B12 + thumbnail]
-    P --> C1[AOI Coverage shapely<br/>intersection/AOI*100<br/>backend/satellite/coverage.py:18]
-    C1 --> Rk[Ranking heuristic<br/>0.45coverage 0.35cloud 0.15temporal 0.05sensor<br/>backend/satellite/ranking.py:1]
-    Rk --> R4
-    R4 --> Sel[Best Scene + Ranked List<br/>selection_score coverage cloud<br/>API POST /api/satellite/search<br/>backend/api/satellite.py]
-    Sel --> Pic[Frontend Select for Analysis<br/>stores SatelliteScene<br/>assets hrefs for NDVI etc<br/>ready for VQA/change/count]
-
-    D -->|single describe/caption| V1[VQA / Captioning<br/>Qwen2-VL-2B phase2-vrsbench]
-    D -->|single how many count| V2[Counting YOLOv8n<br/>yolov8n.pt]
-    D -->|single where locate| V3[Grounding<br/>maps to vqa]
-    D -->|bi-temporal| CH[Change Detection<br/>Qwen2-VL-2B cdvqa_change<br/>T1 T2 pair]
-    D -->|optical-sar| FU[Fusion<br/>phase2-vrsbench optical+SAR]
-
-    Pic --> SP
-    SP[Spectral-Index Agent<br/>backend/spectral/agent.py<br/>6 indices NDVI/NDWI/NDBI/NDMI/SAVI/BSI<br/>real B02 B03 B04 B08 B11] --> SP2[Band Resolver + Raster Processor<br/>CDSE assets only required bands<br/>clip AOI → 10m bilinear / SCL nearest<br/>backend/spectral/bands.py + processor.py]
-    SP2 --> SP3[Cloud Mask SCL + Safe Divide<br/>nodata → nan<br/>backend/spectral/masking.py]
-    SP3 --> SP4[Index Calc + Stats<br/>pixel-wise float32 → min/max/mean/median<br/>valid/masked %<br/>backend/spectral/calculator.py + stats.py]
-    SP4 --> SP5[GeoTIFF + PNG Preview<br/>/tmp/satquery_spectral + bounds 4326<br/>base64 + Leaflet ImageOverlay]
-    SP5 --> REG2[GIS Overlay<br/>MapView spectralLayer<br/>legend + opacity + pixel inspect<br/>frontend/src/components/MapView.tsx]
-
-    V1 --> REG
-    V2 --> REG
-    V3 --> REG
-    CH --> REG
-    FU --> REG
-    SP --> REG
-    REG2 --> REG
-
-    REG[Registry<br/>backend/registry.py<br/>predict images query task<br/>only importer of backend.models.*] --> EV[Evidence + Structured<br/>bullets 3-6 + chart measured<br/>backend/utils/chart.py / yolo boxes<br/>type image_ref bounding_box overlay]
-    EV --> TR[ExecutionTrace Graded<br/>task models_used is_real is_stub latency_ms<br/>confidence evidence_refs total_latency<br/>backend/schemas/__init__.py]
-    TR --> UI[Display<br/>ResultsPanel bullets ChartPanel Bar Pie<br/>ImageryViewer + Confidence + Trace<br/>React + Gradio queue<br/>Map spectral overlay + legend]
-
-    style R1 fill:#0ea5e9,stroke:#0284c7,color:#fff
-    style Rk fill:#22c55e,stroke:#16a34a,color:#fff
-    style SP fill:#a78bfa,stroke:#7c3aed,color:#fff
-    style SP4 fill:#f59e0b,stroke:#d97706,color:#fff
-    style REG fill:#1e293b,stroke:#334155,color:#e2e8f0
-    style TR fill:#f59e0b,stroke:#d97706,color:#fff
+    A[User Input<br/>Natural Language Query +<br/>1-2 Satellite Images] --> B[Frontend<br/>Intelligence Console<br/>or Gradio Space]
+    B --> C[Agentic Controller<br/>validate_inputs + classify_task<br/>backend/controller/__init__.py]
+    C -->|single → vqa/count/grounding| D1[VQA Specialist<br/>Qwen2-VL-2B + phase2-vrsbench<br/>or YOLOv8n if count]
+    C -->|bi-temporal → change_detection| D2[Change Specialist<br/>Qwen2-VL-2B + cdvqa_change<br/>2 images T1+T2]
+    C -->|optical-sar → fusion| D3[Fusion Specialist<br/>Qwen2-VL-2B + phase2-vrsbench<br/>optical+SAR]
+    C -->|where/locate → grounding| D4[Grounding STUB<br/>bounding_box placeholder]
+    D1 --> E[Registry<br/>backend/registry.py<br/>predict → evidence+confidence]
+    D2 --> E
+    D3 --> E
+    D4 --> E
+    E --> F[Evidence + Structured<br/>bullets + chart + confidence<br/>backend/utils/chart.py]
+    F --> G[Execution Trace<br/>Graded Output<br/>task, models_used, latency]
+    G --> H[Frontend Display<br/>Results + Viewer + ChartPanel<br/>Bar/Pie toggle]
 ```
 
 **ExecutionTrace is graded** — every response includes `task`, `models_used[{name, role, parameters, latency_ms, is_real, is_stub}]`, `evidence_refs`, `total_latency_ms` (`frontend/src/types/api.ts:23` ↔ `backend/schemas/__init__.py:39`). See `docs/execution_trace_schema.md`.
 
-Task routing (`backend/controller/__init__.py:282` + spectral `backend/controller/__init__.py:312`):
+Task routing (`backend/controller/__init__.py:182`):
 
-* `Calculate NDVI / Show vegetation health / NDWI / NDBI / NDMI / SAVI / BSI` → `spectral_index` (via `parse_spectral_params` → `spectral_agent`, 6 indices centralized)
-* `Find Sentinel-2 …` / `satellite imagery <X% cloud` / `best satellite image between …` → `satellite_retrieval` (structured params via `parse_retrieval_params`)
 * `bi-temporal` → `change_detection` always
 * `optical-sar` → `optical_sar_fusion` always
 * `single` + `how many/count/number of` → `count` (YOLO)
-* `single` + `where/locate/bounding/ground` → `grounding` (stub, maps to vqa)
+* `single` + `where/locate/bounding/ground` → `grounding` (stub)
 * default → `vqa`
-
-## Live Satellite Data Retrieval (CDSE STAC)
-
-**Purpose:** Turn natural-language AOI + date queries into live Sentinel-2 L2A scenes via Copernicus Data Space Ecosystem `https://stac.dataspace.copernicus.eu/v1`, rank candidates, pipe best scene toward existing VQA/change/counting (no fake data).
-
-### Flow
-```
-User: “Find Sentinel-2 imagery for this AOI from 2026-06-01 to 2026-06-30 with <20% cloud”
-   ↓  planner parses structured params (never raw STAC URLs)
-RetrievalRequest{sensor, product, geometry, start_date, end_date, max_cloud_cover, max_results, required_bands}
-   ↓  Satellite Retrieval Agent (backend/satellite/agent.py)
-CDSE STAC search (pystac-client → HTTP fallback) collections=["sentinel-2-l2a"] intersects=AOI datetime=interval query={"eo:cloud_cover":{"lte":20}}
-   ↓  SatelliteScene (id, datetime, platform, cloud_cover, geometry, bbox, assets, thumbnail)
-   ↓  AOI coverage = intersection(scene,AOI)/AOI*100 (shapely, backend/satellite/coverage.py:18)
-   ↓  ranking → selection_score (heuristic, not scientific QA)
-   ↓  best scene + ranked list → API + ExecutionTrace
-   ↓  frontend “Select for Analysis” → existing agents (future: retrieve_scene_assets)
-```
-
-### Live Retrieval — Simplified Flowchart
-
-```mermaid
-flowchart TD
-    A[AOI Polygon + Dates + Cloud<br/>Frontend + NL parse] --> B[Validate RetrievalRequest<br/>422 if bad]
-    B --> C[Agent + Cache 300s]
-    C --> D[CDSE STAC sentinel-2-l2a<br/>pystac → HTTP fallback]
-    D --> E[Parse → SatelliteScene<br/>assets + thumbnail]
-    E --> F[Coverage & Ranking<br/>shapely + heuristic score]
-    F --> G[Best + Ranked List]
-    G --> H[API + Trace]
-    H --> I[Frontend Select for Analysis]
-    I --> J[Existing VQA / Change / Count]
-
-    style C fill:#0ea5e9,stroke:#0284c7,color:#fff
-    style F fill:#22c55e,stroke:#16a34a,color:#fff
-    style J fill:#a78bfa,stroke:#7c3aed,color:#fff
-```
-
-> **Simplified view** — collapses cache, STAC fallback, coverage/ranking and trace into single nodes for readability. Full technical path is detailed below.
-
-<details>
-<summary><b>Technical details (click to expand) — all steps preserved</b></summary>
-
-| Step | Module | Details |
-|---|---|---|
-| **1. NL → structured params** | `backend/controller/__init__.py:282` `parse_retrieval_params` | Extracts `sensor/product` (sentinel-2 l2a/l1c), `start_date`/`end_date` (ISO or “June 2026” → 01-last), `max_cloud_cover` (`less than 10% cloud`), `required_bands` via `INDEX_REQUIRED_BANDS` (NDVI→B04,B08). LLM never builds STAC URLs. |
-| **2. Validation** | `backend/satellite/models.py` `RetrievalRequest` | Checks `start<=end`, `0<=cloud<=100`, GeoJSON type (Polygon/MultiPolygon, unwraps Feature/Collection), `sensor/product → collection` via `COLLECTION_MAP` (`sentinel-2-l2a`), shapely `is_valid`/`is_empty`. 422 on fail, no traceback. |
-| **3. Agent + Cache** | `backend/satellite/agent.py` `search_satellite_data` + `backend/satellite/cache.py` | In-memory TTL 300s (`SATQUERY_STAC_CACHE_TTL`), max 128 (`SATQUERY_STAC_CACHE_MAX`), SHA256 key of collection/geometry/datetime/cloud/limit. Errors not cached. |
-| **4. CDSE STAC** | `backend/satellite/client.py` | Tries `pystac_client.Client.open(CDSE_STAC_URL).search(collections,intersects,datetime,query eo:cloud_cover lte, max_items)` → `items()` → `to_dict()`; on exception falls back to `requests.post(/v1/search, {collections,intersects,datetime,query,limit}, timeout 20)`. Collections `["sentinel-2-l2a"]`. |
-| **5. Error handling** | `backend/api/satellite.py` | Network/5xx/timeout → `502 Satellite data provider temporarily unavailable` (logged server-side); 0 results → `200 count 0` with message *No Sentinel-2 scenes found…*; malformed items skipped, not crashed. |
-| **6. Parse** | `backend/satellite/client.py:_parse_stac_item` | Maps STAC Item → `SatelliteScene` (`id`, `collection`, `datetime` RFC3339, `platform`, `processing_level`, `cloud_cover`, `geometry`, `bbox`, `assets` href map, `thumbnail` from `thumbnail/preview/visual`, `metadata`). |
-| **7. Asset discovery** | same | Collects **all** `assets` dynamically (not assumed B02-B12), surfaces `B02,B03,B04,B08,B11,B12,visual` when present for future `retrieve_scene_assets(scene_id, requested_assets)`. |
-| **8. Coverage** | `backend/satellite/coverage.py:18` | `coverage = intersection(scene, AOI)/AOI*100` via `shapely`, `make_valid` for self-intersections, unwraps FeatureCollection, planar EPSG:4326. Returns 0-100, fallback 0 if no geometry. |
-| **9. Ranking** | `backend/satellite/ranking.py:1` | `coverage_norm=coverage/100`, `cloud_score=1-cloud/100`, `temporal_score=0.5+0.5*((dt-start)/(end-start))` (recent preferred, 0.5 if dt missing), `sensor_score=1.0 L2A /0.9 L1C /0.8 other` → `selection_score=0.45*cov+0.35*cloud+0.15*temp+0.05*sensor` (0..1, 4dp), sorted `score desc, coverage desc, cloud asc, datetime desc`. *Heuristic, not scientific QA.* |
-| **10. Best + store** | `backend/satellite/agent.py` | `best = max(selection_score)`; ranked list cached (if not from cache). |
-| **11. Trace** | `backend/satellite/models.py` `RetrievalTrace` + controller | `{agent:satellite_retrieval, operation:search, provider:CDSE, collection:sentinel-2-l2a, results_found, results_after_filtering, selected_scene, latency_ms, parameters}` → merged into `ExecutionTrace.models_used` (`backend/controller/__init__.py`). |
-| **12. API** | `backend/api/satellite.py` `POST /api/satellite/search` | Returns `{count, scenes[], best_scene, provider, collection, query, trace, execution_trace}`; `GET /api/satellite/health` (`status, stac_url, supported_sensors`), `POST /api/satellite/assets` stub. |
-| **13. Frontend** | `frontend/src/components/SatelliteSearchPanel.tsx` + `app.py` Gradio | AOI presets Bengaluru/Delhi/Small, GeoJSON textarea, dates, sliders cloud/results, NDVI/NDWI/NDBI selector → ranked cards (thumbnail, date, platform, cloud, coverage, score, assets) → **Select for Analysis** → banner `Selected Scene` ready for VQA/change/count. |
-| **14. Graded trace UI** | `frontend/src/App.tsx` / `app.py` | Retrieval trace panel shows `results_found`, `selected_scene`, `latency_ms`; existing `ExecutionTrace` remains graded (`is_real`, `latency_ms`). |
-
-</details>
-
-### Supported filters (MVP: Sentinel-2 L2A)
-* **Sensor/Product:** `sentinel-2` + `l2a` → `sentinel-2-l2a` (also `l1c`; S1/Landsat extensible via `COLLECTION_MAP` `backend/satellite/models.py:14`)
-* **Spatial:** GeoJSON `Polygon`/`MultiPolygon` EPSG:4326 validated via shapely; Feature/FeatureCollection unwrapped
-* **Temporal:** `start_date`/`end_date` YYYY-MM-DD (`start<=end`) → `datetime` interval
-* **Cloud:** `max_cloud_cover` 0–100 → `eo:cloud_cover lte`
-* **Limit:** `max_results` 1–100
-* **Future band-aware:** `required_analysis=NDVI|NDWI|NDBI` auto-maps to `required_bands` (`NDVI→B04,B08` etc.)
-
-### AOI coverage & ranking
-`coverage = intersection(scene, AOI)/AOI*100` (planar EPSG:4326, `make_valid` for self-intersections, `backend/satellite/coverage.py:18`).
-**Score (heuristic, backend/satellite/ranking.py:1):**
-```
-coverage_norm=coverage/100; cloud_score=1-cloud/100
-temporal_score=0.5+0.5*((datetime-start)/(end-start))  # recent preferred, 0.5 fallback
-sensor_score=1.0(l2a)/0.9(l1c)/0.8(other)
-selection_score=0.45*coverage_norm+0.35*cloud_score+0.15*temporal_score+0.05*sensor_score  # 0..1
-Sorted by score desc, coverage desc, cloud asc, datetime desc
-```
-
-### API
-| Method | Path | Body | Response |
-|---|---|---|---|
-| `POST` | `/api/satellite/search` | `{geometry, start_date, end_date, max_cloud_cover?, sensor?, product?, max_results?, required_bands?, required_analysis?}` | `{count, scenes[{id,datetime,platform,collection,cloud_cover,coverage,selection_score,thumbnail,assets,bbox}], best_scene, provider="CDSE", collection, query, trace, execution_trace}` |
-| `GET` | `/api/satellite/health` | — | `{status, provider, stac_url, collection, supported_sensors, agent}` |
-| `POST` | `/api/satellite/assets` | `{scene_id, requested_assets:[B02,B03,B04,B08,…]}` | stub — returns hrefs note, no raster download in MVP |
-
-Validation: 422 on bad dates/cloud/geometry/sensor; 502 on provider timeout; 200+count 0 on empty (“No Sentinel-2 scenes found…”); never traceback. Caching: in-memory TTL 300s (`SATQUERY_STAC_CACHE_TTL`, max 128 `backend/satellite/cache.py:4`), errors not cached.
-
-### Natural-language examples
-* `Find Sentinel-2 imagery for this region from June 2026.`
-* `Find a Sentinel-2 image with less than 10% cloud cover.`
-* `Get the best satellite image for this AOI between June 1 and June 30.`
-* `Find satellite imagery of this area suitable for vegetation analysis.` → all route to `satellite_retrieval` and produce structured `{intent,sensor,product,start_date,end_date,max_cloud_cover}`
-
-### Frontend
-`SatelliteSearchPanel` (`frontend/src/components/SatelliteSearchPanel.tsx:1`): AOI presets (Bengaluru/Delhi), GeoJSON textarea, dates, cloud/results, NDVI/NDWI/NDBI selector, **Search Sentinel-2 L2A** → ranked cards (thumbnail, date, platform, cloud, coverage, score, assets), **Select for Analysis**. Selected scene banner in right `Selected Scene` panel → ready for VQA/change/count via `scene.assets` (future `retrieve_scene_assets`).
-
-### Execution trace
-```json
-{"agent":"satellite_retrieval","operation":"search","provider":"CDSE","collection":"sentinel-2-l2a","results_found":12,"results_after_filtering":7,"selected_scene":"S2A_...","latency_ms":842}
-```
-Shown in `Retrieval Trace` panel and API `execution_trace`.
-
-### Current limitations & next step
-Only Sentinel-2 L2A live; S1/Landsat schema-ready but not wired; no raster download (hrefs only); coverage planar not geodesic; AOI must be EPSG:4326; cache per-process. **Next:** actual `retrieve_scene_assets` download + AOI chip preprocessing → feed cropped bands into VQA.
-
-### Dependencies added
-`pystac-client>=0.8`, `shapely>=2.0`, `requests>=2.28` (`requirements.txt:44`)
-
-### Tech Stack (update)
-| **Spectral** | `rasterio>=1.5`, `numpy`, `matplotlib`, `Pillow` | 6 indices NDVI/NDWI/NDBI/NDMI/SAVI/BSI, 10m bilinear, SCL cloud mask via `backend/spectral/*.py` |
-
----
-
-## Spectral-Index Agent (Real Sentinel-2 Bands)
-
-**Purpose:** Calculate remote-sensing indices from **real** Sentinel-2 L2A assets (no fake NDVI), via CDSE STAC, and visualize as GIS raster overlay. User can say `Calculate NDVI for this area` → agent resolves bands → downloads only required assets → aligns → masks → calculates → returns GeoTIFF + PNG + stats.
-
-### Supported Indices
-
-| Index | Description | Formula | Bands (Sentinel-2) | Range | Interpretation |
-|---|---|---|---|---|---|
-| **NDVI** | Vegetation | `(NIR-RED)/(NIR+RED)` | NIR **B08** 10m + RED **B04** 10m | -1..1 | <0 water, 0-0.2 bare, 0.2-0.5 moderate, 0.5-1 dense |
-| **NDWI** | Water (McFeeters) | `(GREEN-NIR)/(GREEN+NIR)` | GREEN **B03** 10m + NIR **B08** | -1..1 | >0.3 water |
-| **NDBI** | Built-up | `(SWIR-NIR)/(SWIR+NIR)` | SWIR **B11** 20m + NIR **B08** | -1..1 | >0.3 built-up |
-| **NDMI** | Moisture | `(NIR-SWIR)/(NIR+SWIR)` | NIR **B08** + SWIR **B11** 20m | -1..1 | >0.4 high moisture |
-| **SAVI** | Soil-Adjusted Vegetation (L=0.5) | `((NIR-RED)/(NIR+RED+L))*1+L` | NIR **B08** + RED **B04** | -1..1 | soil-corrected |
-| **BSI** | Bare Soil | `((SWIR+RED)-(NIR+BLUE))/((SWIR+RED)+(NIR+BLUE))` | SWIR **B11** + RED **B04** + NIR **B08** + BLUE **B02** 10m | -1..1 | >0.1 bare |
-
-All in `backend/spectral/registry.py:5` `INDEX_REGISTRY` (name, description, formula, required_bands, range, interpretation, colormap, visual min/max). Adding a new index = add entry, no pipeline rewrite.
-
-### Natural-Language Examples
-
-* `Calculate NDVI for this area.` → **NDVI**
-* `Show vegetation health.` → **NDVI** (alias vegetation → NDVI)
-* `Calculate NDWI.` → **NDWI**
-* `Find built-up areas using NDBI.` → **NDBI**
-* `Show moisture levels.` → **NDMI**
-* `Show bare soil.` → **BSI**
-* `Calculate NDVI for the selected satellite image.` + scene/AOI → spectral agent
-* `Compare NDVI between these two dates.` → future temporal (not yet, currently single-date)
-
-Routing: `backend/controller/__init__.py:312` `_is_spectral_query` → `spectral_index` task; `parse_spectral_params` extracts index; controller `handle` requires scene + AOI, else returns instructional trace with `Select a scene + draw AOI`.
-
-### Architecture
-
-```
-Natural Language ("Calculate NDVI") → Controller parse_spectral_params + classify_task → spectral_index
-Selected SatelliteScene (from /api/satellite/search) + AOI (drawn Polygon)
-  ↓  Spectral-Index Agent (backend/spectral/agent.py)
-  ├─ IndexRegistry (central, 6 indices)
-  ├─ BandResolver (backend/spectral/bands.py: resolve B08/B04 etc from scene.assets, aliases, missing → 422)
-  ├─ RasterProcessor (backend/spectral/processor.py)
-  │    1. Download only required bands via STAC href (requests streaming → /tmp/satquery_bands/{scene}/{band}.jp2, cached)
-  │    2. Clip to AOI (transform AOI EPSG:4326 → scene UTM via rasterio.warp.transform_geom, window from_bounds)
-  │    3. Align CRS/transform/dimensions — target 10m (finest), bilinear for bands, nearest for SCL
-  │    4. Windowed read (AOI only, not full product) → suitable for large AOIs
-  │    5. Nodata (0) + cloud mask (SCL 0,1,3,8,9,10,11) → valid mask
-  │    6. Safe divide (den==0 → nan)
-  │    7. Keep geospatial metadata (crs, transform, profile)
-  ├─ IndexCalculator (backend/spectral/calculator.py: pure numpy, _safe_divide)
-  ├─ Statistics (backend/spectral/stats.py: min/max/mean/median/std/valid/masked % from valid pixels only)
-  └─ Output: GeoTIFF + PNG preview (matplotlib colormap RdYlGn/Blues/Greys etc, base64)
-      → bounds 4326 for Leaflet ImageOverlay
-```
-
-### Band Retrieval
-
-* Reuses `scene.assets` from `Live Satellite Retrieval Agent` (no duplicate STAC logic).
-* `resolve_band_assets` does case-insensitive lookup via `_ASSET_ALIASES` (B02↔blue etc), validates presence, error `Missing required band(s) [B08] … Available: [...]` (422).
-* Downloads **only** `len(required_bands)` assets (NDVI 2, BSI 4) — not entire product. Streaming to `/tmp/satquery_bands`, cached by scene_id+band.
-* Resampling: If B11 20m + B08 10m (NDBI), resample 20m → 10m via `rasterio.warp.reproject` `Resampling.bilinear` (SCL uses `nearest`). Documented `TARGET_RESOLUTIONS 10m`.
-
-### Cloud / Invalid Handling
-
-* **SCL** (Scene Classification 20m) if present (`SCL`/`SCL_20m` asset) → `mask_from_scl` (masked values `0 NoData,1 Saturated,3 Shadow,8 Cloud medium,9 High,10 Cirrus,11 Snow`). Conservative mask, only `cloud_only=False` variant supported; `cloud_mask` flag exposes whether applied.
-* **Nodata** → `mask_nodata` (NaN + custom), `apply_masks` sets `nan` where invalid → index `nan`.
-* **Divide-by-zero** → `nan` via `_safe_divide` (no inf).
-* Stats use `np.isfinite` only; `valid_pct`/`masked_pct` reported.
-* Provenance field `cloud_applied: true/false` + `trace_steps` includes `Cloud mask applied` or `not applied`.
-
-### API
-
-| Method | Path | Body | Response |
-|---|---|---|---|
-| `POST` | `/api/analysis/spectral-index` | `{index: NDVI, scene: SatelliteScene, aoi: GeoJSON|null, cloud_mask?:bool (default true), target_resolution?:10}` | `{index, scene_id, scene_datetime, aoi, required_bands, raster_path, preview_b64 (data:image/png;base64...), preview_path, bounds [[south,west],[north,east]], bounds_4326, profile, stats {min,max,mean,median,std,valid_pixels,masked_pixels,valid_pct,masked_pct}, cloud_applied, latency_ms, trace_steps[], provenance {satellite, product, scene_id, acquisition, stac_catalog, band_assets_used, formula, aoi, processing_parameters, crs, shape, generated_at}, evidence, visual, interpretation}` |
-| `GET` | `/api/analysis/spectral-index/indices` | — | `{indices: [BSI,…], registry: {...}}` |
-| `GET` | `/api/analysis/spectral-index/health` | — | `{status, agent, indices, target_resolution, resampling}` |
-| `POST` | `/api/analysis/spectral-index/pixel` | `{raster_path, lon, lat}` | `{value, lon, lat, row, col}` (samples GeoTIFF via `rasterio` warp) |
-
-Errors: `422` unsupported index / missing band / invalid scene/AOI / all pixels masked; `502` download/processing; `404` raster not found for pixel; never raw traceback. Example error: `NDVI requires B04 and B08, but B08 could not be retrieved for the selected scene.`
-
-### GIS Integration
-
-* After `Calculate NDVI` → `POST /api/analysis/spectral-index` → `preview_b64` + `bounds` → `MapView` `ImageOverlay` (`opacity` slider `0-100%`, `visible` toggle, `Remove`, `Fit to layer` via `fitBounds`).
-* Layers: `LayerControl` now includes `☑ Analysis` (enabled when `spectralResult` exists, disabled + explanation otherwise); future RGB/NDVI/NDWI/NDBI/SAR plug into same `Map {Base,AOI,Footprints,Selected,Spectral,NDVI,…}` architecture — only real-data layers shown.
-* **Legend:** `SpectralLegend` (`frontend/src/components/SpectralLegend.tsx`) dynamic from `visual`/`interpretation` (e.g., NDVI Low <0, Sparse 0-0.2, Moderate 0.2-0.5, Dense 0.5-1), colors `RdYlGn/Blues/Greys`.
-* **Pixel inspect:** Map click → `POST /api/analysis/spectral-index/pixel` → shows `Index: NDVI Value: 0.67 Location: lat,lon Scene: S2A... Date: ...` in bottom bar; if no layer, shows `No spectral layer active`. Modular, reverses via `rasterio.warp.transform`.
-* **Front end:** Left `SpectralPanel` (`frontend/src/components/SpectralPanel.tsx`) — index dropdown (6), cloud mask toggle, `Calculate → Map Layer` button, status `Retrieving B04… Aligning… Cloud mask… Calculating…`, stats (`Mean, Min/Max, valid%`), trace steps, provenance. `QueryInput` NL `Calculate NDVI for this selected scene` also routes via `isSpectralQuery` → same agent.
-
-### Execution Trace & Evidence
-
-Trace shows:
-
-```
-Query → Index identified: NDVI → Selected scene S2A_... → Required bands B04,B08 → STAC assets resolved → Band data retrieved → Bands aligned → Cloud/nodata mask applied → NDVI calculated → Statistics → Raster layer → Map updated
-```
-
-Example `trace_steps` array + `provenance` (satellite, scene_id, acquisition, band hrefs, formula, AOI, cloud_mask, crs, generated_at) + `evidence` (`image_ref` + `overlay`).
-
-### Limitations
-
-* AOI clipping to scene UTM, then reprojected preview to 4326 for Leaflet (planar, not geodesic).
-* Large AOI (>~5000×5000 at 10m) may still be memory heavy — windowed but single read per band; chunked processing is next.
-* Cloud mask conservative SCL only; no FMask; QA60 not yet used.
-* No temporal comparison yet (single-date); `Compare NDVI between these two dates` returns instructional trace, future will be bi-temporal.
-* Raster stored in `/tmp/satquery_spectral` (ephemeral), not S3.
-
-### Dependencies
-`rasterio>=1.5` (`/tmp` + `affine`), `shapely`, `numpy`, `matplotlib` for preview, `Pillow` — added to `venv` (rasterio manylinux). Band cache `SATQUERY_BAND_CACHE_DIR=/tmp/satquery_bands`, output `SATQUERY_SPECTRAL_OUTPUT_DIR=/tmp/satquery_spectral`.
 
 ---
 
@@ -601,11 +342,6 @@ open http://localhost:7860/health   # health
 |---|---|---|
 | `GET` | `/health` , `/api/health` | `HealthResponse` — `specialists` (`registry.health()`), `base_model`, `adapter_path`, `cuda_available`, `force_cpu`, `compute`, `device` |
 | `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`) → `QueryResponse` |
-| `POST` | `/api/satellite/search` | JSON: `geometry` (GeoJSON), `start_date`, `end_date`, `max_cloud_cover?`, `sensor?`, `product?`, `max_results?`, `required_bands?` → `SatelliteSearchResponse` ranked |
-| `GET` | `/api/satellite/health` | — | CDSE provider health |
-| `POST` | `/api/analysis/spectral-index` | JSON: `index` (NDVI…BSI), `scene` (SatelliteScene), `aoi` (GeoJSON), `cloud_mask?`, `target_resolution?` → `{index, scene_id, raster_path, preview_b64, bounds, stats, provenance, trace_steps}` |
-| `GET` | `/api/analysis/spectral-index/indices` | — | List 6 indices + registry |
-| `POST` | `/api/analysis/spectral-index/pixel` | JSON: `raster_path, lon, lat` → `{value, lon, lat}` |
 | `GET` | `/docs` | Swagger UI |
 | `GET` | `/` | Serves `frontend/dist/index.html` when built (Docker/Spaces), else `{"message": ...}` |
 
@@ -664,43 +400,42 @@ Same `Blocks` in `app.py:367` with `Refresh health` (`@spaces.GPU` on demand, no
 
 ```
 mvp/
-├── app.py                          # Gradio + ZeroGPU (HF) — @spaces.GPU reuses backend/controller + spectral search
+├── app.py                          # Gradio + ZeroGPU (HF) — @spaces.GPU reuses backend/controller
 ├── backend/
-│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist, mounts /api/satellite + /api/analysis
-│   ├── config.py                   # BASE_MODEL / ADAPTER_PATH / CHANGE/FUSION/YOLO/spectral knobs
-│   ├── registry.py                 # task → specialist (only importer, now 7 agents: VQA/YOLO/change/fusion/satellite/spectral)
-│   ├── controller/__init__.py      # validate_inputs, classify_task (satellite + spectral), handle → ExecutionTrace
-│   ├── models/                     # VQA/YOLO/change/fusion/grounding (as before)
-│   ├── satellite/                  # Live CDSE STAC: client, models, coverage, ranking, cache, agent
-│   ├── spectral/                   # 🆕 Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
-│   ├── schemas/__init__.py         # ExecutionTrace graded contract
-│   ├── api/
-│   │   ├── __init__.py             # /health + /query
-│   │   ├── satellite.py            # POST /api/satellite/search + /health + /assets
-│   │   └── spectral.py             # 🆕 POST /api/analysis/spectral-index + /pixel + /indices
+│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist
+│   ├── config.py                   # BASE_MODEL / ADAPTER_PATH / CHANGE/FUSION/YOLO knobs from env
+│   ├── registry.py                 # task → specialist (only importer of backend.models.*)
+│   ├── controller/__init__.py      # validate_inputs, classify_task, handle → QueryResponse + ExecutionTrace
+│   ├── models/
+│   │   ├── vqa.py                  # REAL QLoRA (VQA/captioning)
+│   │   ├── yolo.py                 # REAL YOLOv8 counting
+│   │   ├── change.py               # REAL bi-temporal CDVQA
+│   │   ├── fusion.py               # REAL optical-SAR fusion
+│   │   └── grounding.py            # STUB (VRSBench grounding, stage 2/3)
+│   ├── schemas/__init__.py         # ExecutionTrace graded contract (Pydantic)
+│   ├── api/__init__.py             # /health + /query routes (thin, delegates to controller)
 │   └── utils/chart.py              # heuristic chart (measured, not LLM)
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                 # 🗺️ GIS workspace: MapView + LayerControl + SceneCards + SpectralPanel (3-zone + map)
-│   │   ├── api/                    # mockClient, satelliteClient, spectralClient
-│   │   ├── types/                  # api.ts, satellite.ts
-│   │   ├── utils/geojson.ts        # isValidGeoJSON, bounds, sceneToGeoJSON
-│   │   └── components/             # Header, ImageUploader, ImageryViewer, MapView (Leaflet), LayerControl, SceneCards, SceneMetadataPanel, SpectralPanel, SpectralLegend, ResultsPanel, ChartPanel, ...
+│   │   ├── App.tsx                 # 3-zone console + health poll + query log
+│   │   ├── api/mockClient.ts       # real fetch client → /api/query + /api/health
+│   │   ├── types/api.ts            # ExecutionTrace / QueryResponse (mirrors backend/schemas)
+│   │   └── components/             # Header, ImageUploader, ImageryViewer, ResultsPanel, ChartPanel, ...
 │   ├── vite.config.ts              # proxy /api → 8000
-│   └── package.json                # React 18 + Vite 6 + leaflet/react-leaflet/leaflet-draw
+│   └── package.json                # React 18 + Vite 6
 ├── training/
 │   ├── notebooks/                  # satquery_ai_qlora_finetune.ipynb + vrsbench_rsvqa_sft.ipynb + cdvqa_change_sft.ipynb
 │   └── configs/                    # bigearthnet_stage1.json, vrsbench_rsvqa_stage2.json, cdvqa_stage3.json
-├── data/loaders/                   # dataset-specific loaders
-├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py
+├── data/loaders/                   # dataset-specific loaders (config-driven, never hardcoded paths)
+├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py
 ├── docs/
-│   ├── execution_trace_schema.md
-│   ├── hf_spaces.md
-│   └── hf_spaces_gradio.md
-├── scripts/pitch-demo.sh
-├── Dockerfile                      # HF Spaces Docker (node build + python + rasterio + frontend/dist)
-├── Makefile
-├── requirements.txt                # inference + gradio + torchvision + ultralytics + rasterio + pystac-client + shapely
+│   ├── execution_trace_schema.md   # graded contract (Pydantic ↔ TypeScript)
+│   ├── hf_spaces.md                # Docker Spaces deploy
+│   └── hf_spaces_gradio.md         # ZeroGPU Gradio deploy
+├── scripts/pitch-demo.sh           # one-command demo (backend + frontend + health wait)
+├── Dockerfile                      # HF Spaces Docker (multi-stage, PORT 7860)
+├── Makefile                        # pitch-demo, backend, frontend, health, test, build
+├── requirements.txt                # inference + gradio + torchvision + ultralytics
 └── assets/banner3.png
 ```
 

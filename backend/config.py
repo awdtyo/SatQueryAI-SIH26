@@ -134,17 +134,6 @@ TASK_MODEL_MAP: dict[str, str] = {
     "optical_sar_fusion": "fusion",
     "fusion": "fusion",
     "sar": "fusion",
-    "satellite_retrieval": "satellite_retrieval",
-    "retrieval": "satellite_retrieval",
-    "find_satellite": "satellite_retrieval",
-    "spectral_index": "spectral_index",
-    "spectral": "spectral_index",
-    "ndvi": "spectral_index",
-    "ndwi": "spectral_index",
-    "ndbi": "spectral_index",
-    "ndmi": "spectral_index",
-    "savi": "spectral_index",
-    "bsi": "spectral_index",
 }
 
 # Supported input modes (mirrors frontend InputMode)

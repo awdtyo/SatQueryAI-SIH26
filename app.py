@@ -74,7 +74,6 @@ except Exception:
 from backend import config as app_config
 from backend.controller import handle as controller_handle
 from backend import registry
-from backend.satellite.models import RetrievalRequest  # for validation error messages
 
 logger = logging.getLogger("satquery.gradio")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -170,189 +169,6 @@ def _coerce_gradio_image(img: Any, filename: str | None = None) -> tuple[str | N
     except Exception:
         pass
     raise ValueError(f"Unsupported Gradio image type: {type(img)}")
-
-
-# ── Live Satellite Search (CDSE STAC Sentinel-2 L2A) — no GPU needed ──
-_PRESET_AOIS = {
-    "Bengaluru": {"type": "Polygon", "coordinates": [[[77.45, 12.85], [77.75, 12.85], [77.75, 13.05], [77.45, 13.05], [77.45, 12.85]]]},
-    "Delhi": {"type": "Polygon", "coordinates": [[[76.9, 28.4], [77.35, 28.4], [77.35, 28.85], [76.9, 28.85], [76.9, 28.4]]]},
-    "Small AOI (1km)": {"type": "Polygon", "coordinates": [[[77.59, 12.97], [77.6, 12.97], [77.6, 12.98], [77.59, 12.98], [77.59, 12.97]]]},
-}
-
-def _preset_to_json(name: str) -> str:
-    return json.dumps(_PRESET_AOIS.get(name, _PRESET_AOIS["Bengaluru"]), indent=2)
-
-
-def satellite_search(
-    geometry_text: str,
-    start_date: str,
-    end_date: str,
-    max_cloud_cover: float,
-    max_results: int,
-    required_analysis: str,
-) -> tuple[str, Any, Any, str, Any]:
-    """Gradio handler for live CDSE Sentinel-2 L2A search — no GPU, direct agent call."""
-    # Returns (status_md, scenes_json, trace_json, thumbs_html, selected_json)
-    try:
-        geom = json.loads(geometry_text) if geometry_text.strip() else None
-    except Exception as e:
-        return f"❌ Invalid GeoJSON: {e}", [], {}, "", None
-    if not geom:
-        return "❌ AOI geometry is required (GeoJSON Polygon). Choose a preset or paste GeoJSON.", [], {}, "", None
-    if not start_date or not end_date:
-        return "❌ Start and end dates are required (YYYY-MM-DD).", [], {}, "", None
-
-    # Build params — mirrors frontend satelliteClient
-    params: dict[str, Any] = {
-        "sensor": "sentinel-2",
-        "product": "l2a",
-        "geometry": geom,
-        "start_date": start_date.strip(),
-        "end_date": end_date.strip(),
-        "max_cloud_cover": float(max_cloud_cover),
-        "max_results": int(max_results),
-    }
-    if required_analysis and required_analysis != "none":
-        params["required_analysis"] = required_analysis
-        # auto bands via model
-        try:
-            from backend.satellite.models import INDEX_REQUIRED_BANDS
-
-            bands = INDEX_REQUIRED_BANDS.get(required_analysis.upper())
-            if bands:
-                params["required_bands"] = bands
-        except Exception:
-            pass
-
-    # Validate via RetrievalRequest for nice errors (before network)
-    try:
-        _ = RetrievalRequest(**params)  # type: ignore[arg-type]
-    except Exception as e:
-        return f"❌ Validation error: {e}", [], {}, "", None
-
-    try:
-        from backend.satellite.agent import search_satellite_data
-
-        result = search_satellite_data(params)
-    except ValueError as e:
-        return f"❌ Validation: {e}", [], {}, "", None
-    except RuntimeError as e:
-        logger.error("Satellite search provider error: %s", e)
-        return "❌ Satellite data provider temporarily unavailable. Please try again in a moment.", [], {}, "", None
-    except Exception as e:
-        logger.exception("Satellite search failed: %s", e)
-        return f"❌ Search failed: {e}", [], {}, "", None
-
-    scenes = result.get("scenes", []) or []
-    best = result.get("best_scene")
-    trace = result.get("trace", {}) or {}
-
-    if not scenes:
-        status = "No Sentinel-2 scenes found for the requested AOI and date range. Try widening dates or increasing max cloud cover."
-        return status, [], trace, "", None
-
-    # Build scenes JSON serializable (Pydantic → dict via model_dump)
-    scenes_json = []
-    for s in scenes:
-        try:
-            d = s.model_dump(mode="json") if hasattr(s, "model_dump") else s.dict()  # type: ignore
-            # Ensure datetime string
-            if d.get("datetime"):
-                d["datetime"] = str(d["datetime"])
-            scenes_json.append(d)
-        except Exception:
-            scenes_json.append({"id": getattr(s, "id", "unknown"), "error": "serialize failed"})
-
-    # Thumbnails HTML gallery (lightweight, no download)
-    thumbs_parts = []
-    for sc in scenes_json[:8]:
-        thumb = sc.get("thumbnail")
-        sid = sc.get("id", "")
-        cloud = sc.get("cloud_cover")
-        cov = sc.get("coverage")
-        score = sc.get("selection_score")
-        dt = sc.get("datetime", "")
-        if thumb:
-            thumbs_parts.append(
-                f'<div style="display:inline-block;margin:4px;text-align:center;vertical-align:top;width:132px">'
-                f'<img src="{thumb}" style="width:128px;height:128px;object-fit:cover;border-radius:6px;border:1px solid #334155" loading="lazy" onerror="this.style.display=\'none\'"/>'
-                f'<div style="font-size:10px;color:#e2e8f0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:128px" title="{sid}">{sid[:22]}</div>'
-                f'<div style="font-size:10px;color:#94a3b8">{str(dt)[:10]} · {cloud if cloud is not None else "—"}% cloud</div>'
-                f'<div style="font-size:10px;color:#94a3b8">{cov if cov is not None else "—"}% cov · score {score if score is not None else "—"}</div>'
-                f"</div>"
-            )
-        else:
-            thumbs_parts.append(
-                f'<div style="display:inline-block;margin:4px;width:128px;height:128px;border:1px dashed #334155;border-radius:6px;text-align:center;line-height:128px;font-size:10px;color:#64748b">no preview<br/><span title="{sid}">{sid[:12]}</span></div>'
-            )
-    thumbs_html = '<div style="display:flex;flex-wrap:wrap;gap:4px">' + "".join(thumbs_parts) + "</div>" if thumbs_parts else ""
-
-    # Status markdown with best highlighted
-    best_line = ""
-    if best is not None:
-        try:
-            b = best.model_dump(mode="json") if hasattr(best, "model_dump") else best.dict()  # type: ignore
-            best_line = f"**Best:** `{b.get('id')}` · {str(b.get('datetime'))[:16]} · cloud {b.get('cloud_cover')}% · coverage {b.get('coverage')}% · score {b.get('selection_score')}"
-        except Exception:
-            best_line = f"**Best:** `{getattr(best,'id','unknown')}`"
-    status = f"✅ Found **{len(scenes)}** Sentinel-2 L2A scenes. {best_line}\n\nCDSE STAC `sentinel-2-l2a` · {trace.get('latency_ms','—')}ms · {trace.get('results_found','—')} ranked. Select a scene below for analysis → assets available for VQA/change/count (future: `retrieve_scene_assets`)."
-
-    # Auto-select best for downstream
-    selected = scenes_json[0] if scenes_json else None
-    # Prefer actual best if ranked order is already best-first
-    if best is not None:
-        try:
-            bid = best.id if hasattr(best, "id") else best.get("id")  # type: ignore
-            for sj in scenes_json:
-                if sj.get("id") == bid:
-                    selected = sj
-                    break
-        except Exception:
-            pass
-
-    return status, scenes_json, trace, thumbs_html, selected
-
-
-def _format_selected_scene(scene_json: Any) -> str:
-    if not scene_json:
-        return "*No scene selected.* Choose a result or run a search."
-    try:
-        sid = scene_json.get("id", "unknown")
-        dt = scene_json.get("datetime", "—")
-        plat = scene_json.get("platform", "—")
-        cloud = scene_json.get("cloud_cover", "—")
-        cov = scene_json.get("coverage", "—")
-        score = scene_json.get("selection_score", "—")
-        assets = scene_json.get("assets", {}) or {}
-        thumb = scene_json.get("thumbnail", "")
-        asset_list = ", ".join(list(assets.keys())[:8]) if assets else "—"
-        thumb_md = f"![thumbnail]({thumb})" if thumb else "*No thumbnail*"
-        return (
-            f"**Selected Scene → Ready for Analysis**\n\n"
-            f"`{sid}`\n\n"
-            f"- **Datetime:** {dt} · **Platform:** {plat}\n"
-            f"- **Cloud:** {cloud}% · **Coverage:** {cov}% · **Score:** {score}\n"
-            f"- **Assets ({len(assets)}):** {asset_list}\n"
-            f"- **Thumbnail:** {thumb_md}\n\n"
-            f"> Assets are hrefs from CDSE STAC (no raster download in MVP). Future: `retrieve_scene_assets(scene_id, [B04,B08])` → AOI chip → VQA/change/count."
-        )
-    except Exception as e:
-        return f"Selected scene parse error: {e}\n\n```json\n{json.dumps(scene_json, indent=2)[:2000]}\n```"
-
-
-def _scenes_to_choices(scenes_json: Any) -> list[str]:
-    if not scenes_json or not isinstance(scenes_json, list):
-        return []
-    return [s.get("id", f"scene-{i}") for i, s in enumerate(scenes_json) if isinstance(s, dict)]
-
-
-def _pick_scene_by_id(scenes_json: Any, scene_id: str) -> Any:
-    if not scenes_json or not scene_id:
-        return None
-    for s in scenes_json:
-        if isinstance(s, dict) and s.get("id") == scene_id:
-            return s
-    return None
 
 
 def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[no-untyped-def]
@@ -567,8 +383,8 @@ with gr.Blocks(
     gr.Markdown(
         """
         # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
-        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); Stage-3 **change real `imadityasarkar/cdvqa_change` bi-temporal**, fusion real · **Live Satellite Search (CDSE STAC Sentinel-2 L2A)** via `backend/satellite` (coverage + ranking heuristic) → **Select for Analysis** → same pipeline.
-        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=60)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB. **Satellite search needs no GPU** — live CDSE STAC `sentinel-2-l2a` with TTL 300s cache.
+        **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); Stage-3 **change real `imadityasarkar/cdvqa_change` bi-temporal**, fusion stub.
+        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=30)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
         """
     )
 
@@ -610,48 +426,6 @@ with gr.Blocks(
             run_btn = gr.Button("Execute Analysis", variant="primary")
             clear_btn = gr.Button("Clear", variant="secondary")
             status = gr.Markdown("")
-
-            # ── Live Satellite Search (CDSE STAC Sentinel-2 L2A) ──
-            with gr.Accordion("Live Satellite Search — CDSE STAC Sentinel-2 L2A (no fake data)", open=False):
-                gr.Markdown(
-                    "Search live Sentinel-2 L2A from **CDSE STAC `https://stac.dataspace.copernicus.eu/v1`** · AOI + dates + cloud → ranked scenes → **Select for Analysis** → same VQA/change/count pipeline. No credentials, `pystac-client` → HTTP fallback, TTL 300s cache."
-                )
-                sat_preset = gr.Dropdown(
-                    choices=list(_PRESET_AOIS.keys()),
-                    value="Bengaluru",
-                    label="AOI Preset",
-                    info="Pick a preset to fill GeoJSON — or paste your own Polygon below",
-                )
-                sat_geometry = gr.Textbox(
-                    label="AOI Geometry (GeoJSON Polygon EPSG:4326)",
-                    value=_preset_to_json("Bengaluru"),
-                    lines=6,
-                    placeholder='{"type":"Polygon","coordinates":[[[lon,lat],...]]}',
-                )
-                with gr.Row():
-                    sat_start = gr.Textbox(label="Start date (YYYY-MM-DD)", value="2026-06-01", placeholder="2026-06-01")
-                    sat_end = gr.Textbox(label="End date (YYYY-MM-DD)", value="2026-06-30", placeholder="2026-06-30")
-                with gr.Row():
-                    sat_cloud = gr.Slider(minimum=0, maximum=100, value=20, step=1, label="Max cloud cover %")
-                    sat_max_results = gr.Slider(minimum=1, maximum=20, value=10, step=1, label="Max results")
-                sat_analysis = gr.Dropdown(
-                    choices=["none", "NDVI", "NDWI", "NDBI"],
-                    value="none",
-                    label="Required analysis (future band-aware)",
-                    info="NDVI→B04,B08 · NDWI→B03,B08 · NDBI→B08,B11 (retrieval stores required_bands)",
-                )
-                sat_search_btn = gr.Button("Search Sentinel-2 L2A (live CDSE)", variant="secondary")
-                sat_status = gr.Markdown("")
-                sat_thumbs = gr.HTML(label="Thumbnails (best-first)")
-                sat_scenes = gr.JSON(label="Scenes (ranked, with coverage & selection_score)", value=[])
-                sat_trace = gr.JSON(label="Retrieval Trace (CDSE STAC)", value={})
-                # Selected scene for downstream
-                sat_selected_state = gr.State(value=None)
-                sat_scene_picker = gr.Dropdown(choices=[], value=None, label="Pick scene for analysis (or auto best)", visible=False)
-                sat_select_btn = gr.Button("Select for Analysis", variant="primary", visible=False)
-                sat_selected_md = gr.Markdown(value="*No scene selected — run a search first.*")
-                # Keep raw scenes state for picker
-                sat_scenes_state = gr.State(value=[])
 
         with gr.Column(scale=3):
             gr.Markdown("### Intelligence Result — bullets replace paragraph (3-6 bullets, chart below)")
@@ -716,43 +490,6 @@ with gr.Blocks(
     def _update_chart(chart_state: Any, chart_type: str):  # type: ignore[no-untyped-def]
         return _chart_to_plot(chart_state or {"data": [], "type": "distribution"}, chart_type or "Bar")
 
-    # ── Live Satellite Search wiring ──
-    def _on_preset_change(preset: str):
-        return _preset_to_json(preset)
-
-    sat_preset.change(fn=_on_preset_change, inputs=[sat_preset], outputs=[sat_geometry])
-
-    def _on_satellite_search(geom_text, s_date, e_date, cloud, max_res, analysis):
-        status, scenes_json, trace_json, thumbs_html, selected = satellite_search(geom_text, s_date, e_date, cloud, max_res, analysis)
-        # Build picker choices
-        choices = _scenes_to_choices(scenes_json)
-        # picker visible if we have scenes
-        picker_update = gr.update(choices=choices, value=choices[0] if choices else None, visible=bool(choices))
-        btn_update = gr.update(visible=bool(choices))
-        selected_md = _format_selected_scene(selected)
-        return status, scenes_json, trace_json, thumbs_html, selected, picker_update, btn_update, selected_md, scenes_json
-
-    sat_search_btn.click(
-        fn=_on_satellite_search,
-        inputs=[sat_geometry, sat_start, sat_end, sat_cloud, sat_max_results, sat_analysis],
-        outputs=[sat_status, sat_scenes, sat_trace, sat_thumbs, sat_selected_state, sat_scene_picker, sat_select_btn, sat_selected_md, sat_scenes_state],
-        show_progress=True,
-    )
-
-    def _on_pick_scene(scene_id: str, scenes_state: Any):
-        picked = _pick_scene_by_id(scenes_state, scene_id)
-        md = _format_selected_scene(picked)
-        return picked, md
-
-    sat_scene_picker.change(fn=_on_pick_scene, inputs=[sat_scene_picker, sat_scenes_state], outputs=[sat_selected_state, sat_selected_md])
-
-    def _on_select_for_analysis(selected_state: Any):
-        md = _format_selected_scene(selected_state)
-        # Also surface in main evidence area as quick hint
-        return md
-
-    sat_select_btn.click(fn=_on_select_for_analysis, inputs=[sat_selected_state], outputs=[sat_selected_md])
-
     refresh_health.click(fn=_health_gpu, outputs=[health])
     # Initial health load — prefilled, no GPU quota cost
     demo.load(fn=_health_placeholder, outputs=[health])
@@ -775,53 +512,10 @@ with gr.Blocks(
         """
     )
 
-    def _clear_all():
-        return (
-            None,
-            None,
-            "",
-            "single",
-            "*Awaiting analysis — bullets will appear here*",
-            0.0,
-            {},
-            "",
-            {"data": [], "type": "distribution"},
-            None,
-            "",
-            [],
-            {},
-            "",
-            None,
-            gr.update(choices=[], value=None, visible=False),
-            gr.update(visible=False),
-            "*No scene selected — run a search first.*",
-            [],
-        )
-
     clear_btn.click(
-        fn=_clear_all,
+        fn=lambda: (None, None, "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None),
         inputs=None,
-        outputs=[
-            image_a,
-            image_b,
-            query,
-            input_mode,
-            answer,
-            confidence,
-            trace,
-            evidence,
-            chart_state,
-            chart_plot,
-            sat_status,
-            sat_scenes,
-            sat_trace,
-            sat_thumbs,
-            sat_selected_state,
-            sat_scene_picker,
-            sat_select_btn,
-            sat_selected_md,
-            sat_scenes_state,
-        ],
+        outputs=[image_a, image_b, query, input_mode, answer, confidence, trace, evidence, chart_state, chart_plot],
     )
 
 # Required for @spaces.GPU scheduling — without queue the GPU worker never drains and UI hangs
