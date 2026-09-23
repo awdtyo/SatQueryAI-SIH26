@@ -520,11 +520,11 @@ def _enrich_with_spatial_descriptions(
                 words = len(answer.split())
                 if has_brackets and len(nums) >= 4 and words < 20:
                     raw_like = True
-                elif coords := graph_coords:
+                elif graph_coords:
                     raw_like = True
             except Exception:
                 pass
-            if raw_like and all_coords is None:
+            if raw_like:
                 # Still try to describe answer's coordinates
                 try:
                     spatial = describe_graph_output(answer, image_dimensions=img_dims)
@@ -593,9 +593,14 @@ def _enrich_with_spatial_descriptions(
             # Check if answer already contains spatial language (e.g., upper-left)
             has_spatial_lang = any(k in answer.lower() for k in ["upper", "lower", "center", "left", "right", "portion of the image", "detected region"])
             if not has_spatial_lang:
-                # Append spatial description as leading natural answer, preserving original answer after
-                # Avoid duplicating if answer is already long natural text
-                if len(answer.strip()) < 30 or ("[" in answer and "]" in answer):
+                # If answer is raw coordinates, replace with natural description (raw preserved in evidence)
+                import re
+
+                nums = re.findall(r"[-+]?\d*\.?\d+", answer)
+                is_raw_answer = "[" in answer and "]" in answer and len(nums) >= 4 and len(answer.split()) < 20
+                if is_raw_answer:
+                    result["answer"] = spatial["description"]
+                elif len(answer.strip()) < 30:
                     result["answer"] = spatial["description"] + ("\n\n" + answer if answer.strip() else "")
                 else:
                     # Prepend spatial interpretation
@@ -612,6 +617,38 @@ def _enrich_with_spatial_descriptions(
     except Exception as e:
         logger.debug("Spatial enrichment skipped: %s", e)
     return result
+
+
+def _is_quantitative_query(query: str) -> bool:
+    """Return True if query expects quantitative visualization."""
+    q = (query or "").lower()
+    keywords = [
+        "how many",
+        "count",
+        "number of",
+        "chart",
+        "graph",
+        "distribution",
+        "percentage",
+        "percent",
+        "spectral",
+        "ndvi",
+        "ndwi",
+        "ndbi",
+        "ndmi",
+        "savi",
+        "bsi",
+        "nbr",
+        "mndwi",
+        "change",
+        "compare",
+        "plot",
+        "statistic",
+        "histogram",
+        "bar",
+        "pie",
+    ]
+    return any(k in q for k in keywords)
 
 
 def _build_structured(result: dict[str, Any], task: str) -> tuple[Any, list[Any] | None, str | None]:
@@ -1033,6 +1070,35 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # Structured bullets/chart from specialist (question-aware)
     structured_obj, chart_list, chart_type = _build_structured(result, task)
 
+    # Chart should only be rendered for quantitative tasks; for normal VQA, set to null to avoid svgDistribution undefined
+    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
+        chart_list = None
+        chart_type = None  # type: ignore
+        if structured_obj:
+            structured_obj.chart = []
+            structured_obj.chart_type = None  # type: ignore
+    # Strict chart validation — ensure label/value are valid, else null
+    if chart_list is not None:
+        valid_entries: list[Any] = []
+        for c in chart_list:
+            try:
+                if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
+                    # Check not NaN/inf and within range
+                    if c.value != c.value or c.value in (float("inf"), float("-inf")):  # NaN or inf
+                        continue
+                    if -100 <= c.value <= 1000:
+                        valid_entries.append(c)
+            except Exception:
+                continue
+        if not valid_entries:
+            chart_list = None
+            chart_type = None  # type: ignore
+            if structured_obj:
+                structured_obj.chart = []
+                structured_obj.chart_type = None  # type: ignore
+        else:
+            chart_list = valid_entries
+
     return QueryResponse(
         answer=answer,
         confidence=confidence,
@@ -1226,6 +1292,33 @@ def _handle_active_scene(
     )
 
     structured_obj, chart_list, chart_type = _build_structured(result, task)
+
+    # Chart validation for active scene — same as main handle
+    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
+        chart_list = None
+        chart_type = None  # type: ignore
+        if structured_obj:
+            structured_obj.chart = []
+            structured_obj.chart_type = None  # type: ignore
+    if chart_list is not None:
+        valid_entries: list[Any] = []
+        for c in chart_list:
+            try:
+                if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
+                    if c.value != c.value or c.value in (float("inf"), float("-inf")):
+                        continue
+                    if -100 <= c.value <= 1000:
+                        valid_entries.append(c)
+            except Exception:
+                continue
+        if not valid_entries:
+            chart_list = None
+            chart_type = None  # type: ignore
+            if structured_obj:
+                structured_obj.chart = []
+                structured_obj.chart_type = None  # type: ignore
+        else:
+            chart_list = valid_entries
 
     return QueryResponse(
         answer=answer,

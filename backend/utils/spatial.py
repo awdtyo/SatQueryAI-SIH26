@@ -95,9 +95,12 @@ def _detect_coordinate_system(
         # If any value > w or > h significantly, pixel
         if any(v > max(w, h) * 1.2 for v in flat if v > 1):
             return "pixel"
-        # If values are large pixel numbers (e.g., 100-1000) already handled
-        if any(v > 1 for v in flat):
+        # Pixel if any value clearly exceeds normalized range (e.g., >5) — small overflow like 2.05 stays normalized
+        if any(v > 5 for v in flat):
             return "pixel"
+    # Small overflow (e.g., 0-2.5) is likely normalized with slight out-of-range, treat as normalized
+    if flat and max(flat) < 5 and min(flat) >= 0 and any(0 <= v <= 1 for v in flat):
+        return "normalized"
     # If values are outside 0-1 but within geo range, unknown unless image dims clarify
     # Heuristic: if flat contains pairs where one in -90..90 and other -180..180 and we have even count >=2, could be geographic
     # But without hint, default to unknown to avoid guessing
@@ -531,9 +534,29 @@ def describe_graph_output(graph_data: Any, image_dimensions: tuple[int, int] | N
     """Handle graph output that may be list of arrays or string representation."""
     # Try to parse if string
     if isinstance(graph_data, str):
-        # Very rough parse of strings like "[0.0 0.5, 0 1.0]" — treat as unknown unless parseable
         import re
 
+        # Prefer bracket groups: each [ ... ] is one spatial region
+        bracket_groups = re.findall(r"\[([^\]]+)\]", graph_data)
+        if bracket_groups:
+            region_centers: list[list[float]] = []
+            for group in bracket_groups:
+                nums = re.findall(r"[-+]?\d*\.?\d+", group)
+                try:
+                    floats = [float(n) for n in nums]
+                    if len(floats) >= 2 and len(floats) % 2 == 0:
+                        xs = floats[0::2]
+                        ys = floats[1::2]
+                        cx = sum(xs) / len(xs)
+                        cy = sum(ys) / len(ys)
+                        region_centers.append([cx, cy])
+                    elif len(floats) >= 2:
+                        region_centers.append([floats[0], floats[1]])
+                except Exception:
+                    continue
+            if region_centers:
+                return describe_spatial_output(region_centers, coordinate_system=coordinate_system, image_dimensions=image_dimensions)
+        # Fallback: plain numbers
         nums = re.findall(r"[-+]?\d*\.?\d+", graph_data)
         try:
             floats = [float(n) for n in nums]

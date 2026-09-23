@@ -536,6 +536,23 @@ def predict(
     # Remove any stray JSON fence the model may still emit (chart is heuristic now)
     if "```json" in answer:
         answer = re.sub(r"```json\s*\{.*?\}\s*```", "", answer, flags=re.DOTALL).strip()
+    # Check for raw coordinates as answer — do not treat as natural language
+    try:
+        nums = re.findall(r"[-+]?\d*\.?\d+", answer)
+        has_brackets = "[" in answer and "]" in answer
+        words = len(answer.split())
+        if has_brackets and len(nums) >= 4 and words < 20:
+            try:
+                from backend.utils.spatial import describe_graph_output
+
+                spatial = describe_graph_output(answer, image_dimensions=image.size)
+                answer = spatial["description"]
+                bullets = []
+            except Exception:
+                answer = "The model did not produce a usable natural-language answer for this query."
+                bullets = []
+    except Exception:
+        pass
     if not bullets and answer.strip():
         # Split answer sentences into bullets if model ignored format
         sents = re.split(r"(?<=[.!?])\s+", answer.strip())

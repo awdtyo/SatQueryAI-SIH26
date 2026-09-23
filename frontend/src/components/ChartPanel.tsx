@@ -18,11 +18,19 @@ const COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f43f5e", "#14b8a6"
 
 export default function ChartPanel({ chart, chartType }: { chart: ChartEntry[]; chartType?: string | null }) {
   const [mode, setMode] = useState<"bar" | "pie">("bar");
-  if (!chart || chart.length === 0) return null;
+  // Strict validation — only render when chart is array with valid numeric entries
+  if (!chart || !Array.isArray(chart) || chart.length === 0) return null;
+  // Filter valid entries
+  const validChart = chart.filter(
+    (c) => c && typeof c.label === "string" && typeof c.value === "number" && isFinite(c.value) && c.label.trim() !== ""
+  );
+  if (validChart.length === 0) return null;
+  if (chartType && !["count", "change", "distribution", "none"].includes(chartType)) return null;
+  if (chartType === "none") return null;
 
   const isCount = chartType === "count";
   const isChange = chartType === "change";
-  const data = chart.map((c) => ({ name: c.label, value: c.value }));
+  const data = validChart.map((c) => ({ name: c.label, value: c.value }));
 
   const title = isCount ? "Count" : isChange ? "Change" : "Distribution";
   const unit = isCount ? "" : "%";
