@@ -72,6 +72,20 @@ class QueryResponse(BaseModel):
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
     chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
+    # Active-scene context: set when the query was analyzed against a SELECTED satellite scene
+    # (Selected Satellite Image Query Mode). Carries the scene id/collection/datetime/aoi that
+    # was actually analyzed so the UI can render an "Active Scene" card + provenance.
+    scene_context: dict[str, Any] | None = Field(
+        default=None,
+        description="Active satellite scene context the query was analyzed against (scene id, collection, datetime, platform, cloud, aoi, analysis_source).",
+    )
+    # Raster payload for map overlay (spectral index preview_b64/bounds/stats, or scene RGB
+    # image info for VQA/count on the active scene). Kept separate from ExecutionTrace so the
+    # frontend can render a GIS layer without re-deriving it from trace parameters.
+    analysis: dict[str, Any] | None = Field(
+        default=None,
+        description="Raster analysis payload (type, preview_b64, bounds, stats, scene_id) for map overlay and evidence.",
+    )
 
 
 class HealthResponse(BaseModel):

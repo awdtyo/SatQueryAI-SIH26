@@ -32,6 +32,8 @@ class QueryResponse(BaseModel):
     confidence: float
     execution_trace: ExecutionTrace
     evidence: list[EvidenceRef]         # mirrors execution_trace.evidence_refs
+    scene_context: dict[str, Any] | None = None  # selected-satellite-image mode
+    analysis: dict[str, Any] | None = None       # structured payload (e.g. spectral stats) vs text answer
 
 class HealthResponse(BaseModel):
     status: str
@@ -74,6 +76,8 @@ type QueryResponse = {
   confidence: number;
   execution_trace: ExecutionTrace;
   evidence: EvidenceRef[];
+  scene_context?: Record<string, unknown>;
+  analysis?: Record<string, unknown>;
 };
 ```
 
@@ -84,6 +88,26 @@ type QueryResponse = {
 - `evidence_refs` and `evidence` are mirrors — controller builds both from same `result["evidence"]` `backend/controller/__init__.py:247`.
 - `task` is normalized via `registry._normalize_task()` `backend/registry.py:59` and `controller.classify_task()` `backend/controller/__init__.py:182` (`single`->`vqa`/`grounding`/`count`, `bi-temporal`->`change_detection` via `imadityasarkar/cdvqa_change`, `optical-sar`->`optical_sar_fusion`).
 - `total_latency_ms` includes validation + classification + specialist `latency_ms` (specialist may supply `_latency_ms`).
+
+## Selected-satellite-image mode (`scene_context` / `analysis`)
+
+- `POST /api/query` accepts optional multipart `scene_json` + `aoi_json` form fields
+  (`backend/api/__init__.py`), used when the user activates a retrieved scene ("Query This
+  Image"). When `scene_json` is present, `images` may be omitted.
+- `scene_context` (`backend/controller/__init__.py` `_scene_ctx`) is populated on scene
+  queries: `{scene_id, collection, datetime, sentinel_tile, provider, aoi}` plus the resolved
+  image provenance (`{image_source, expression, bands, leaflet_bounds}`).
+- Controller reroutes scene queries via `_classify_scene_query`: quantitative cover/water/built
+  phrases without an explicit index map to `spectral_index`; `satellite_retrieval` is preserved;
+  otherwise `vqa`/`count` resolve the scene's real RGB bands to a PIL image
+  (`backend/scene/raster.py` `resolve_scene_rgb`, B04/B03/B02) and call
+  `registry.predict([pil], query, task)`. AOI confines the clip via
+  `Intersection(Scene, AOI)` inside `backend/spectral/processor.py`.
+- `analysis` mirrors structured non-answer payloads at the top level — e.g. spectral success
+  returns `{**spec_data, type: "spectral_index"}` (`preview_b64`, `bounds`, `stats`,
+  `provenance`) so the frontend overlay/legend renders from the same payload as the direct
+  `/api/analysis/spectral-index` endpoint. Scene resolutions carry
+  `{type: "active_scene_image", scene_id, source, bands, leaflet_bounds}`.
 
 ## Health
 

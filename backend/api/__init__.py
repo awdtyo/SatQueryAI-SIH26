@@ -6,6 +6,7 @@ backend.controller.handle() which in turn uses backend.registry.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Annotated, List, Optional
 
@@ -66,15 +67,39 @@ async def query(
     # Allow alternative form field names for compatibility
     image_0: UploadFile | None = None,
     image_1: UploadFile | None = None,
+    # Selected Satellite Image Query Mode: the active scene instead of uploaded images
+    scene_json: Annotated[str, Form(description="Active Sentinel-2 scene as JSON (SatelliteScene)")] = None,
+    aoi_json: Annotated[str, Form(description="Optional AOI GeoJSON polygon to clip analysis to")] = None,
 ):
     """Agentic query endpoint — validates, routes to specialist, returns trace.
 
     Accepts both:
       - `images` as repeated file field (frontend default)
       - `image_0`, `image_1` as explicit slots (alternative clients)
+      - `scene_json` + optional `aoi_json`: analyze a SELECTED satellite scene's
+        real assets instead of uploaded demo images (Selected Satellite Image
+        Query Mode). No image files required in this mode.
     """
     if not query_text or not query_text.strip():
         raise HTTPException(status_code=400, detail="query must be non-empty")
+
+    # Parse optional active-scene context
+    scene: dict | None = None
+    if scene_json:
+        try:
+            scene = json.loads(scene_json)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"scene_json is not valid JSON: {e}") from e
+        if not isinstance(scene, dict):
+            raise HTTPException(status_code=422, detail="scene_json must be a JSON object (SatelliteScene)")
+    aoi: dict | None = None
+    if aoi_json:
+        try:
+            aoi = json.loads(aoi_json)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"aoi_json is not valid JSON: {e}") from e
+        if not isinstance(aoi, dict):
+            raise HTTPException(status_code=422, detail="aoi_json must be a JSON object (GeoJSON)")
 
     # Collect UploadFiles from either style
     upload_files: list[UploadFile] = []
@@ -85,8 +110,8 @@ async def query(
     if image_1 is not None:
         upload_files.append(image_1)
 
-    if not upload_files:
-        raise HTTPException(status_code=400, detail="At least one image file is required (field 'images' or 'image_0')")
+    if not upload_files and not scene:
+        raise HTTPException(status_code=400, detail="At least one image file is required (field 'images' or 'image_0'), or a selected scene via 'scene_json'")
 
     # Read UploadFiles asynchronously into (filename, bytes) tuples for the controller.
     # Controller is sync and handles (filename, bytes) or PIL — keep I/O at the edge.
@@ -106,6 +131,8 @@ async def query(
             query=query_text,
             images=image_payloads,
             input_mode=input_mode,
+            scene=scene,
+            aoi=aoi,
         )
     except HTTPException:
         raise

@@ -19,7 +19,8 @@ import SceneMetadataPanel from "./components/SceneMetadataPanel";
 import { isValidGeoJSON } from "./utils/geojson";
 import SpectralPanel from "./components/SpectralPanel";
 import SpectralLegend from "./components/SpectralLegend";
-import { samplePixel, calculateSpectralIndex } from "./api/spectralClient";
+import ActiveSceneContext from "./components/ActiveSceneContext";
+import { samplePixel } from "./api/spectralClient";
 
 type HealthState = {
   status: string;
@@ -51,22 +52,6 @@ function isSpectralQuery(q: string): boolean {
   return false;
 }
 
-function parseSpectralIndex(q: string): string {
-  const low = q.toLowerCase();
-  if (low.includes("ndvi")) return "NDVI";
-  if (low.includes("ndwi")) return "NDWI";
-  if (low.includes("ndbi")) return "NDBI";
-  if (low.includes("ndmi")) return "NDMI";
-  if (low.includes("savi")) return "SAVI";
-  if (low.includes("bsi") || low.includes("bare soil")) return "BSI";
-  if (low.includes("vegetation")) return "NDVI";
-  if (low.includes("water")) return "NDWI";
-  if (low.includes("built") || low.includes("urban")) return "NDBI";
-  if (low.includes("moisture")) return "NDMI";
-  if (low.includes("soil")) return "SAVI";
-  return "NDVI";
-}
-
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [inputMode, setInputMode] = useState<InputMode>("single");
@@ -76,6 +61,7 @@ export default function App() {
   const [queryHistory, setQueryHistory] = useState<string[]>([]);
   const [health, setHealth] = useState<HealthState>(null);
   const [selectedScene, setSelectedScene] = useState<SatelliteScene | null>(null);
+  const [activeScene, setActiveScene] = useState<SatelliteScene | null>(null);
   const [satelliteTrace, setSatelliteTrace] = useState<Record<string, unknown> | null>(null);
   const [showSatellite, setShowSatellite] = useState(true);
 
@@ -120,12 +106,51 @@ export default function App() {
     };
   }, []);
 
+  const runSceneQuery = useCallback(
+    async (query: string, scene: SatelliteScene) => {
+      setError(null);
+      setGisError(null);
+      setIsLoading(true);
+      setResponse(null);
+      try {
+        const result = await submitQuery({
+          query,
+          input_mode: "single",
+          images: [],
+          scene: scene as unknown as Record<string, unknown>,
+          aoi: aoiGeometry ?? undefined,
+        });
+        setResponse(result);
+        setQueryHistory((prev) => [query, ...prev].slice(0, 20));
+        // Spectral/NL-cover answers carry the raster payload in `analysis` -> map overlay
+        const analysis = (result.analysis ?? {}) as Record<string, unknown>;
+        if (analysis.preview_b64) {
+          setSpectralResult({ ...analysis, scene_id: analysis.scene_id ?? scene.id });
+          setSpectralVisible(true);
+          setLayerVisibility((prev) => ({ ...prev, analysis: true }));
+          setMapMode("analysis");
+        } else {
+          setMapMode("analysis");
+        }
+      } catch (err) {
+        setError({
+          message: "Scene query processing failed",
+          details: err instanceof Error ? err.message : String(err),
+        });
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [aoiGeometry]
+  );
+
   const handleSubmit = useCallback(
     async (query: string) => {
-      // Spectral NL routing — e.g., "Calculate NDVI for this area"
+      // Spectral NL routing on a selected/active scene -> unified /api/query (trace + overlay)
       if (isSpectralQuery(query)) {
-        if (!selectedScene) {
-          setError({ message: "Please select a Sentinel-2 scene first (click a footprint or card), then ask to calculate an index." });
+        const sceneCtx = activeScene ?? selectedScene;
+        if (!sceneCtx) {
+          setError({ message: "Please select a Sentinel-2 scene first (run a search, pick a footprint, click Query This Image), then ask to calculate an index." });
           setMapMode("gis");
           return;
         }
@@ -134,19 +159,7 @@ export default function App() {
           setMapMode("gis");
           return;
         }
-        const idx = parseSpectralIndex(query);
-        setError(null);
-        setGisError(null);
-        try {
-          const res = await calculateSpectralIndex({ index: idx, scene: selectedScene as unknown as Record<string, unknown>, aoi: aoiGeometry, cloud_mask: true });
-          setSpectralResult(res as unknown as Record<string, unknown>);
-          setSpectralVisible(true);
-          setLayerVisibility((prev) => ({ ...prev, analysis: true }));
-          setQueryHistory((prev) => [query, ...prev].slice(0, 20));
-          setMapMode("gis");
-        } catch (err) {
-          setError({ message: `Spectral ${idx} failed`, details: err instanceof Error ? err.message : String(err) });
-        }
+        await runSceneQuery(query, sceneCtx);
         return;
       }
       // GIS retrieval via natural language + AOI
@@ -177,7 +190,10 @@ export default function App() {
           setGisScenes(res.scenes || []);
           setGisTrace(res.trace || res.execution_trace || null);
           setSatelliteTrace(res.trace || res.execution_trace || null);
-          if (res.scenes?.length) setSelectedScene(res.best_scene ?? res.scenes[0] ?? null);
+          if (res.scenes?.length) {
+            setSelectedScene(res.best_scene ?? res.scenes[0] ?? null);
+            // Do not auto-activate; user explicitly picks "Query This Image" per scene.
+          }
           setQueryHistory((prev) => [query, ...prev].slice(0, 20));
           setMapMode("gis");
           if (res.count === 0) setGisError("No satellite scenes found for this AOI and date range.");
@@ -189,8 +205,14 @@ export default function App() {
         return;
       }
 
+      // Selected Satellite Image Query Mode — analyze the ACTIVE scene's real assets.
+      if (activeScene && images.length === 0) {
+        await runSceneQuery(query, activeScene);
+        return;
+      }
+
       if (images.length === 0) {
-        setError({ message: "Upload at least one image before querying." });
+        setError({ message: "Upload at least one image before querying, or select an active satellite scene to query." });
         return;
       }
       setError(null);
@@ -214,7 +236,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [images, inputMode, aoiGeometry, selectedScene]
+    [activeScene, images, inputMode, aoiGeometry, runSceneQuery]
   );
 
   const handleAoiChange = useCallback((geom: Record<string, unknown> | null) => {
@@ -230,14 +252,36 @@ export default function App() {
     (id: string) => {
       const all = gisScenes.length ? gisScenes : [];
       const found = all.find((s) => s.id === id) || null;
-      if (found) setSelectedScene(found);
-      else {
+      if (found) {
+        setSelectedScene(found);
+        // Active scene switches immediately when another footprint is clicked
+        if (activeScene) {
+          setActiveScene(found);
+          setResponse(null);
+          setGisError(null);
+        }
+      } else {
         // Also check panel's scenes if GIS empty
         setSelectedScene((prev) => (prev?.id === id ? prev : prev));
       }
     },
-    [gisScenes]
+    [gisScenes, activeScene]
   );
+
+  // Selected Satellite Image Query Mode — explicitly activate a scene for NL analysis.
+  const handleActivateScene = useCallback((scene: SatelliteScene) => {
+    setSelectedScene(scene);
+    setActiveScene(scene);
+    setResponse(null);
+    setError(null);
+    setMapMode("gis");
+  }, []);
+
+  const handleClearScene = useCallback(() => {
+    setActiveScene(null);
+    setResponse(null);
+    // Keep the currently selected footprint; user picks a new one to activate.
+  }, []);
 
   // Sync gisScenes with panel's external scenes: panel will call onScenesChange
   const handlePanelScenesChange = useCallback((scenes: SatelliteScene[], trace: Record<string, unknown> | null) => {
@@ -500,7 +544,7 @@ export default function App() {
         {/* RIGHT: Telemetry */}
         <div className="w-full lg:w-[300px] flex-shrink-0 flex flex-col gap-3 min-h-0 lg:overflow-y-auto">
           {/* Scene metadata - primary in GIS */}
-          <SceneMetadataPanel scene={selectedScene} onSelectForAnalysis={(s) => setSelectedScene(s)} />
+          <SceneMetadataPanel scene={selectedScene} onSelectForAnalysis={handleActivateScene} />
 
           {/* Selected scene banner legacy (keep for trace continuity, hidden if metadata shows) */}
           {selectedScene && (
@@ -568,7 +612,12 @@ export default function App() {
       </div>
 
       <div className="flex-shrink-0 border-t border-surface-400/40 bg-surface-800/90 px-5 py-3.5">
-        <QueryInput onSubmit={handleSubmit} disabled={isLoading || gisLoading} />
+        <div className="max-w-[1400px] mx-auto">
+          <div className="mb-2.5">
+            <ActiveSceneContext scene={activeScene} onClear={handleClearScene} onActivate={handleActivateScene} />
+          </div>
+          <QueryInput onSubmit={handleSubmit} disabled={isLoading || gisLoading} activeScene={activeScene} />
+        </div>
       </div>
 
       <LoadingOverlay visible={isLoading || gisLoading} />

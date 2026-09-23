@@ -234,7 +234,7 @@ def parse_spectral_params(query: str) -> dict[str, Any]:
             return {"index": cand.upper(), "intent": "spectral_index"}
     if "vegetation" in q or "veg " in f" {q} ":
         return {"index": "NDVI", "intent": "spectral_index"}
-    if "water" in q and "index" in q:
+    if "water" in q and ("index" in q or "bodies" in q or "body" in q or "how much" in q or "% water" in q or "water present" in q):
         return {"index": "NDWI", "intent": "spectral_index"}
     if "built" in q or "urban" in q:
         return {"index": "NDBI", "intent": "spectral_index"}
@@ -372,19 +372,141 @@ def classify_task(query: str, input_mode: str) -> str:
     return "vqa"
 
 
+# --- Selected Satellite Image Query Mode: scene-aware routing ---
+
+def _classify_scene_query(query: str, base_task: str, scene: dict[str, Any] | None, aoi: dict[str, Any] | None) -> str:
+    """Reroute quantitative cover/water/built queries when a scene is ACTIVE.
+
+    Selected Satellite Image Query Mode: asking "How much vegetation?", "Are there
+    water bodies?" or "% built-up" about a selected scene is a real raster question,
+    so it routes to the spectral-index agent (real band math) instead of a VQA model
+    hallucinating numbers. Plain uploaded-image VQA is untouched (scene is None).
+    """
+    if not scene:
+        return base_task
+    q = query.lower()
+    # Explicit index / retrieval intents keep their routing
+    if base_task in ("spectral_index", "satellite_retrieval"):
+        return base_task
+
+    quant = ["how much", "how many", "%", "percent", "amount", "area", "coverage", "present", "there", "calculate", "index"]
+    if ("vegetation" in q or f"veg " in f" {q} ") and any(w in q for w in quant):
+        return "spectral_index"
+    if "water" in q and any(w in q for w in ["bodies", "body", *quant]):
+        return "spectral_index"
+    if ("built-up" in q or "built up" in q or "builtup" in q or "urban" in q) and any(w in q for w in ["how much", "how many", "%", "percent", "area", "cover", "calculate"]):
+        return "spectral_index"
+    if "bare soil" in q or ("soil" in q and "bare" in q):
+        if any(w in q for w in ["%", "how much", "area", "there"]):
+            return "spectral_index"
+    return base_task
+
+
+def _scene_ctx(scene: dict[str, Any] | Any, aoi: dict[str, Any] | None = None, source: str | None = None) -> dict[str, Any]:
+    """Flatten a scene (dict or SatelliteScene) into a small context dict for the trace."""
+    if isinstance(scene, dict):
+        scene_id = str(scene.get("id") or scene.get("scene_id") or "unknown")
+        collection = str(scene.get("collection") or "sentinel-2-l2a")
+        dt = scene.get("datetime")
+        platform = scene.get("platform")
+        cloud = scene.get("cloud_cover")
+        bbox = scene.get("bbox")
+        thumb = scene.get("thumbnail")
+    else:
+        scene_id = str(getattr(scene, "id", "unknown"))
+        collection = str(getattr(scene, "collection", "sentinel-2-l2a"))
+        dt = getattr(scene, "datetime", None)
+        platform = getattr(scene, "platform", None)
+        cloud = getattr(scene, "cloud_cover", None)
+        bbox = getattr(scene, "bbox", None)
+        thumb = getattr(scene, "thumbnail", None)
+    out: dict[str, Any] = {
+        "scene_id": scene_id,
+        "collection": collection,
+        "datetime": str(dt) if dt else None,
+        "platform": platform,
+        "cloud_cover": cloud,
+        "bbox": bbox,
+        "thumbnail": thumb,
+    }
+    if aoi:
+        out["aoi"] = aoi
+    if source:
+        out["analysis_source"] = source
+    return out
+
+
+def _build_structured(result: dict[str, Any], task: str) -> tuple[Any, list[Any] | None, str | None]:
+    """Extract StructuredOutput/ChartEntry from a specialist result (shared by all paths)."""
+    from backend.schemas import ChartEntry, StructuredOutput
+
+    structured = result.get("_structured")
+    chart = result.get("_chart")
+    chart_type_raw = result.get("_chart_type") or (structured.get("chart_type") if isinstance(structured, dict) else None)
+    structured_obj: StructuredOutput | None = None
+    chart_list: list[ChartEntry] | None = None
+    chart_type: str | None = None
+    try:
+        if isinstance(chart_type_raw, str) and chart_type_raw in ("distribution", "count", "change", "none"):
+            chart_type = chart_type_raw
+        elif task == "count":
+            chart_type = "count"
+        elif task in ("change_detection", "change"):
+            chart_type = "change"
+        elif task in ("vqa", "captioning", "visual_question_answering"):
+            chart_type = "distribution"
+        else:
+            chart_type = None
+
+        if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
+            bullets = [str(b) for b in structured.get("bullets", [])[:6]]
+            chart_entries: list[ChartEntry] = []
+            for c in structured.get("chart", [])[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
+                        continue
+            if isinstance(structured.get("chart_type"), str):
+                chart_type = structured.get("chart_type")
+            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries, chart_type=chart_type)  # type: ignore
+            chart_list = chart_entries
+        elif isinstance(chart, list) and chart:
+            chart_entries = []
+            for c in chart[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
+                        continue
+            if chart_entries:
+                structured_obj = StructuredOutput(bullets=[], chart=chart_entries, chart_type=chart_type)  # type: ignore
+                chart_list = chart_entries
+        # If structured still None but we have chart_type, create empty structured for type propagation
+        if structured_obj is None and chart_type is not None:
+            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=chart_type)  # type: ignore
+    except Exception as e:
+        logger.warning("Structured parse failed: %s", e)
+    return structured_obj, chart_list, chart_type  # type: ignore
+
+
 # --- Orchestration ---
 
-def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_geometry: dict[str, Any] | None = None, retrieval_params: dict[str, Any] | None = None) -> QueryResponse:
+def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_geometry: dict[str, Any] | None = None, retrieval_params: dict[str, Any] | None = None, scene: dict[str, Any] | None = None, aoi: dict[str, Any] | None = None) -> QueryResponse:
     """Main controller entrypoint — validates, classifies, routes, merges, traces.
 
     Called by API route handler. Never imports backend.models directly; goes via registry.
     For satellite_retrieval, images are optional if retrieval_geometry is provided.
+    For selected-satellite-image mode, an active `scene` (SatelliteScene dict) replaces
+    uploaded images: NL queries are analyzed against that scene's real band assets.
     """
     t0 = time.time()
-    logger.info("Controller: query=%r mode=%s images=%d", (query or "")[:80], input_mode, len(images) if images else 0)
+    logger.info("Controller: query=%r mode=%s images=%d scene=%s", (query or "")[:80], input_mode, len(images) if images else 0, "yes" if scene else "no")
 
     # 2. Classify first (needed to decide if validation can be skipped for retrieval)
     task = classify_task(query, input_mode)
+    # Scene-aware rerouting — quantitative cover/water/built NL on an ACTIVE scene -> spectral
+    task = _classify_scene_query(query, task, scene, aoi)
     logger.info("Controller: classified task=%s", task)
 
     # Satellite retrieval path — no image validation required, needs AOI
@@ -513,7 +635,12 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # Spectral-index path — no image validation, needs scene + AOI
     if task == "spectral_index":
         # Retrieve index and scene from params or query
-        spec_params = retrieval_params or {}
+        spec_params = dict(retrieval_params or {})
+        # Merge active-scene context (Selected Satellite Image Query Mode)
+        if scene:
+            spec_params.setdefault("scene", scene)
+        if aoi:
+            spec_params.setdefault("aoi", aoi)
         # Try to parse index from query if not in params
         parsed = parse_spectral_params(query)
         index = spec_params.get("index") or spec_params.get("spectral_index") or parsed.get("index") or "NDVI"
@@ -547,6 +674,8 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
                 structured=None,
                 chart=None,
                 chart_type=None,
+                scene_context=_scene_ctx(scene, aoi=aoi) if scene else None,
+                analysis={"type": "spectral_error", "index": index, "error": "missing scene or AOI"},
             )
         # Route to spectral agent
         specialist = registry.get_specialist(task)
@@ -625,6 +754,15 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             structured=structured_obj,
             chart=None,
             chart_type=None,
+            scene_context=_scene_ctx(scene, aoi=aoi, source="bands"),
+            analysis={**spec_data, "type": "spectral_index"},
+        )
+
+    # Selected Satellite Image Query Mode — analysis against a live scene's real assets.
+    # No uploaded images required: the active scene (from the satellite search) is the input.
+    if scene and not images:
+        return _handle_active_scene(
+            query=query, task=task, input_mode=input_mode, scene=scene, aoi=aoi, t0=t0
         )
 
     # 1. Validate (non-retrieval path)
@@ -710,62 +848,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     )
 
     # Structured bullets/chart from specialist (question-aware)
-    structured = result.get("_structured")
-    chart = result.get("_chart")
-    chart_type_raw = result.get("_chart_type") or (structured.get("chart_type") if isinstance(structured, dict) else None)
-    # Normalize to StructuredOutput shape
-    structured_obj = None
-    chart_list = None
-    chart_type: str | None = None
-    try:
-        # Determine chart_type from specialist or task
-        if isinstance(chart_type_raw, str) and chart_type_raw in ("distribution", "count", "change", "none"):
-            chart_type = chart_type_raw
-        elif task == "count":
-            chart_type = "count"
-        elif task in ("change_detection", "change"):
-            chart_type = "change"
-        elif task in ("vqa", "captioning", "visual_question_answering"):
-            chart_type = "distribution"
-        else:
-            chart_type = None
-
-        if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
-            from backend.schemas import ChartEntry, StructuredOutput
-
-            bullets = [str(b) for b in structured.get("bullets", [])[:6]]
-            chart_entries = []
-            for c in structured.get("chart", [])[:5]:
-                if isinstance(c, dict) and "label" in c and "value" in c:
-                    try:
-                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
-                    except Exception:
-                        continue
-            # Honor chart_type from structured if present
-            if isinstance(structured.get("chart_type"), str):
-                chart_type = structured.get("chart_type")
-            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries, chart_type=chart_type)  # type: ignore
-            chart_list = chart_entries
-        elif isinstance(chart, list) and chart:
-            from backend.schemas import ChartEntry, StructuredOutput
-
-            chart_entries = []
-            for c in chart[:5]:
-                if isinstance(c, dict) and "label" in c and "value" in c:
-                    try:
-                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
-                    except Exception:
-                        continue
-            if chart_entries:
-                structured_obj = StructuredOutput(bullets=[], chart=chart_entries, chart_type=chart_type)  # type: ignore
-                chart_list = chart_entries
-        # If structured still None but we have chart_type, create empty structured for type propagation
-        if structured_obj is None and chart_type is not None:
-            from backend.schemas import StructuredOutput
-
-            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=chart_type)  # type: ignore
-    except Exception as e:
-        logger.warning("Structured parse failed: %s", e)
+    structured_obj, chart_list, chart_type = _build_structured(result, task)
 
     return QueryResponse(
         answer=answer,
@@ -775,4 +858,195 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
+    )
+
+
+def _handle_active_scene(
+    query: str,
+    task: str,
+    input_mode: str,
+    scene: dict[str, Any],
+    aoi: dict[str, Any] | None,
+    t0: float,
+) -> QueryResponse:
+    """Analyze the SELECTED satellite scene (Selected Satellite Image Query Mode).
+
+    Resolves a real RGB composite from the scene's band assets (B04/B03/B02,
+    AOI-clipped) or falls back to the scene preview thumbnail, then routes to the
+    specialist with that image. The response carries an explicit `scene_context`
+    so the trace/provenance clearly records WHICH scene was analyzed.
+    """
+    from backend.scene.raster import resolve_scene_rgb
+
+    # Scene-based analysis is single-image only; change/fusion need uploaded pairs.
+    if task in ("change_detection", "change", "optical_sar_fusion", "fusion"):
+        total_latency = int((time.time() - t0) * 1000)
+        trace = ExecutionTrace(
+            task=task,
+            models_used=[
+                ModelTraceEntry(
+                    name="Active Scene Router",
+                    role="scene_analysis",
+                    parameters={"error": "change/fusion require bi-temporal or optical-sar image pairs"},
+                    latency_ms=0,
+                    is_real=True,
+                    is_stub=False,
+                )
+            ],
+            parameters={"input_mode": input_mode, "image_count": 1, "scene_context": _scene_ctx(scene, aoi=aoi)},
+            confidence=0.35,
+            evidence_refs=[],
+            total_latency_ms=total_latency,
+        )
+        return QueryResponse(
+            answer=f"Change detection / SAR fusion needs an image pair. Upload the T1/T2 (or optical+SAR) images, or ask a single-scene question about this active scene (e.g. describe, count, or a spectral index).",
+            confidence=0.35,
+            execution_trace=trace,
+            evidence=[],
+            structured=None,
+            chart=None,
+            chart_type=None,
+            scene_context=_scene_ctx(scene, aoi=aoi),
+            analysis=None,
+        )
+
+    # Resolve a real analysis image from the active scene's assets.
+    resolve_start = time.time()
+    try:
+        resolved = resolve_scene_rgb(scene, aoi=aoi)
+    except Exception as e:
+        # Indistinct/no-AOI/preview-missing — return traced instructional response.
+        logger.warning("Active scene resolution failed for %s: %s", _scene_ctx(scene)["scene_id"], e)
+        total_latency = int((time.time() - t0) * 1000)
+        trace = ExecutionTrace(
+            task=task,
+            models_used=[
+                ModelTraceEntry(
+                    name="Active Scene Resolver",
+                    role="scene_asset_resolution",
+                    parameters={"error": str(e)},
+                    latency_ms=int((time.time() - resolve_start) * 1000),
+                    is_real=True,
+                    is_stub=False,
+                )
+            ],
+            parameters={"input_mode": input_mode, "image_count": 1, "scene_context": _scene_ctx(scene, aoi=aoi)},
+            confidence=0.3,
+            evidence_refs=[],
+            total_latency_ms=total_latency,
+        )
+        return QueryResponse(
+            answer=f"{e}\n\nDraw an AOI polygon on the map for the active scene to analyze its real band data.",
+            confidence=0.3,
+            execution_trace=trace,
+            evidence=[],
+            structured=None,
+            chart=None,
+            chart_type=None,
+            scene_context=_scene_ctx(scene, aoi=aoi),
+            analysis={"type": "active_scene_error", "error": str(e)},
+        )
+
+    pil_image = resolved["image"]
+    image_source = resolved["source"]  # "bands" (AOI-clipped) or "thumbnail" fallback
+
+    # Route to the specialist with the resolved scene image.
+    specialist = registry.get_specialist(task)
+    specialist_name = getattr(specialist, "__name__", str(specialist))
+    try:
+        model_info = specialist.get_model_info()  # type: ignore
+        model_label = model_info.get("adapter_path") or model_info.get("base_model") or specialist_name
+        is_real = bool(model_info.get("is_real", False))
+        is_stub = bool(model_info.get("stub", False))
+    except Exception:
+        model_label = specialist_name
+        is_real = False
+        is_stub = True
+
+    invoke_start = time.time()
+    try:
+        result = registry.predict([pil_image], query, task)
+    except Exception as e:
+        logger.error("Specialist %s failed on active scene: %s", task, e, exc_info=True)
+        result = {
+            "answer": f"Specialist '{task}' failed on the selected scene: {e}",
+            "evidence": [],
+            "confidence": 0.0,
+            "_latency_ms": int((time.time() - invoke_start) * 1000),
+            "_error": str(e),
+        }
+        is_stub = True
+
+    latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
+    answer = str(result.get("answer", ""))
+    confidence = float(result.get("confidence", 0.5))
+    confidence = max(0.0, min(1.0, confidence))
+    evidence_raw = result.get("evidence", [])
+    total_latency = int((time.time() - t0) * 1000)
+
+    evidence_refs: list[EvidenceRef] = []
+    for ev in evidence_raw:
+        try:
+            evidence_refs.append(EvidenceRef(**ev))
+        except Exception:
+            logger.warning("Skipping malformed evidence: %r", ev)
+
+    # The analysis image came from the scene's real assets, not a user upload.
+    evidence_refs.append(
+        EvidenceRef(
+            type="image_ref",
+            description=f"Analysis image resolved from active scene {_scene_ctx(scene)['scene_id']} ({resolved.get('bands', []) or 'preview'} via {'real band assembly' if image_source == 'bands' else 'scene preview thumbnail'})",
+            image_index=0,
+        )
+    )
+
+    scene_ctx = _scene_ctx(scene, aoi=aoi, source=image_source)
+    model_entry = ModelTraceEntry(
+        name=model_label if isinstance(model_label, str) else specialist_name,
+        role=task,
+        parameters={
+            "input_mode": input_mode,
+            "image_count": 1,
+            "scene_context": scene_ctx,
+            "adapter_path": config.ADAPTER_PATH,
+            "base_model": config.BASE_MODEL,
+        },
+        latency_ms=latency_ms,
+        is_real=is_real and not bool(result.get("_stub", False)),
+        is_stub=bool(result.get("_stub", False)) or is_stub,
+    )
+
+    trace = ExecutionTrace(
+        task=task,
+        models_used=[model_entry],
+        parameters={
+            "input_mode": input_mode,
+            "image_count": 1,
+            "band_subset": resolved.get("bands") or ["preview"],
+            "spatial_resolution_m": 10,
+            "scene_context": scene_ctx,
+        },
+        confidence=confidence,
+        evidence_refs=evidence_refs,
+        total_latency_ms=total_latency,
+    )
+
+    structured_obj, chart_list, chart_type = _build_structured(result, task)
+
+    return QueryResponse(
+        answer=answer,
+        confidence=confidence,
+        execution_trace=trace,
+        evidence=evidence_refs,
+        structured=structured_obj,
+        chart=chart_list,
+        chart_type=chart_type,  # type: ignore
+        scene_context=scene_ctx,
+        analysis={
+            "type": "active_scene_image",
+            "scene_id": _scene_ctx(scene)["scene_id"],
+            "source": image_source,
+            "bands": resolved.get("bands") or [],
+            "leaflet_bounds": resolved.get("leaflet_bounds"),
+        },
     )

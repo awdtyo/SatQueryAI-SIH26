@@ -360,6 +360,7 @@ All in `backend/spectral/registry.py:5` `INDEX_REGISTRY` (name, description, for
 * `Show moisture levels.` → **NDMI**
 * `Show bare soil.` → **BSI**
 * `Calculate NDVI for the selected satellite image.` + scene/AOI → spectral agent
+* `Are there water bodies in the selected scene?` + scene/AOI → **NDWI** (scene-aware reroute, water-body → NDWI)
 * `Compare NDVI between these two dates.` → future temporal (not yet, currently single-date)
 
 Routing: `backend/controller/__init__.py:312` `_is_spectral_query` → `spectral_index` task; `parse_spectral_params` extracts index; controller `handle` requires scene + AOI, else returns instructional trace with `Select a scene + draw AOI`.
@@ -440,6 +441,48 @@ Example `trace_steps` array + `provenance` (satellite, scene_id, acquisition, ba
 
 ### Dependencies
 `rasterio>=1.5` (`/tmp` + `affine`), `shapely`, `numpy`, `matplotlib` for preview, `Pillow` — added to `venv` (rasterio manylinux). Band cache `SATQUERY_BAND_CACHE_DIR=/tmp/satquery_bands`, output `SATQUERY_SPECTRAL_OUTPUT_DIR=/tmp/satquery_spectral`.
+
+---
+
+## Selected-Satellite-Image Query Mode
+
+**Purpose:** Once a scene is retrieved and active ("Query This Image"), follow-up queries analyze that **actual** scene instead of requiring a manual upload — VQA/count get the scene's real RGB composite, and NL index queries reuse the spectral agent.
+
+* **Retrieve → Activate:** Retrieval returns ranked `SatelliteScene`s with raster `assets`. Clicking a footprint / `🛰️ Query This Image →` sets it as the active scene.
+* **Active Scene card** (`frontend/src/components/ActiveSceneContext.tsx`): shows the active scene with `[Query This Image →]` and `[Change Scene]`; clearing returns to plain upload mode.
+* **Unified `/api/query`:** accepts optional multipart `scene_json` + `aoi_json` form fields. With `scene_json`, `images` may be omitted; invalid JSON → `422`.
+* **Scene-aware routing** (`backend/controller/__init__.py:282` `_classify_scene_query`): explicit index + scene → `spectral_index` as before; quantitative cover/water/built-up phrases (e.g. `How much water is in the selected scene?`) without an explicit index also reroute to `spectral_index` (index auto-mapped, water-body → NDWI); `satellite_retrieval` is preserved; everything else resolves the scene image and runs VQA/count.
+* **Scene RGB resolver** (`backend/scene/raster.py` `resolve_scene_rgb`): downloads B04/B03/B02 via CDSE STAC, builds a true-color composite through the same `backend/spectral/processor.py` pipeline (AOI → `Intersection(Scene, AOI)` clip, 10 m) and returns the PIL image + `leaflet_bounds` + provenance trace. No AOI → falls back to the thumb asset.
+* **Scene answers carry re-analysis provenance:** `QueryResponse` gains optional `scene_context` (`{scene_id, collection, datetime, platform, cloud, aoi, analysis:{image_source, expression, bands, leaflet_bounds}}`) and `analysis` (map overlay payload, e.g. spectral `preview_b64`/`bounds`/`stats`). The input cycle is provable: query → which scene → which bands → source region.
+* **Map overlay:** spectral scene queries render the result as a Leaflet `ImageOverlay` with legend + pixel inspect, driven from `analysis`, identical to the direct `/api/analysis/spectral-index` path.
+* **Execution trace:** each scene query records task, model(s), `scene_context`, plus resolved-image evidence in the same `ExecutionTrace` → `evidence` shape.
+
+### API
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/query` | Multipart: `query`, `input_mode`, optional `images` (0 allowed iff `scene_json` given), optional `scene_json`, `aoi_json` → `QueryResponse` |
+
+`QueryResponse` (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type`, `scene_context?`, `analysis?`.
+
+### Flowchart
+
+```
+Natural Language ("How much water?") + active SatelliteScene + AOI
+  → Controller _classify_scene_query (scene-aware)
+     ├─ explicit index          → spectral_index (parse_spectral_params)
+     ├─ quantitative cover/
+     │    water/built phrase    → spectral_index (auto index map, NDWI for water)  [requires AOI]
+     ├─ "find more scenes"      → satellite_retrieval (preserved)
+     └─ VQA / count / describe  → resolve_scene_rgb → registry.predict([pil], query, vqa|count)
+               ↓
+        QueryResponse {answer, execution_trace, evidence,
+                       scene_context, analysis{preview_b64, bounds, stats}}
+```
+
+### Evidence / trace contract
+
+Mirrors `docs/execution_trace_schema.md`; the resolved-image provenance is attached as `image_ref` evidence (`scene_id + B04/B03/B02 @ 10 m + bounds`) and re-exposed via `scene_context.analysis` + `analysis` so the UI can re-render the overlay and the region analyzed.
 
 ---
 
@@ -600,7 +643,7 @@ open http://localhost:7860/health   # health
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` , `/api/health` | `HealthResponse` — `specialists` (`registry.health()`), `base_model`, `adapter_path`, `cuda_available`, `force_cpu`, `compute`, `device` |
-| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`) → `QueryResponse` |
+| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`), optional `scene_json`/`aoi_json` (selected-satellite-image mode) → `QueryResponse` |
 | `POST` | `/api/satellite/search` | JSON: `geometry` (GeoJSON), `start_date`, `end_date`, `max_cloud_cover?`, `sensor?`, `product?`, `max_results?`, `required_bands?` → `SatelliteSearchResponse` ranked |
 | `GET` | `/api/satellite/health` | — | CDSE provider health |
 | `POST` | `/api/analysis/spectral-index` | JSON: `index` (NDVI…BSI), `scene` (SatelliteScene), `aoi` (GeoJSON), `cloud_mask?`, `target_resolution?` → `{index, scene_id, raster_path, preview_b64, bounds, stats, provenance, trace_steps}` |
@@ -609,7 +652,7 @@ open http://localhost:7860/health   # health
 | `GET` | `/docs` | Swagger UI |
 | `GET` | `/` | Serves `frontend/dist/index.html` when built (Docker/Spaces), else `{"message": ...}` |
 
-`QueryResponse` shape (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`).
+`QueryResponse` shape (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`), `scene_context?`, `analysis?` (scene mode).
 
 ---
 
@@ -673,6 +716,7 @@ mvp/
 │   ├── models/                     # VQA/YOLO/change/fusion/grounding (as before)
 │   ├── satellite/                  # Live CDSE STAC: client, models, coverage, ranking, cache, agent
 │   ├── spectral/                   # 🆕 Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
+│   ├── scene/                      # 🆕 Selected-Satellite-Image mode: raster.py (resolve B04/B03/B02 → RGB PIL + leaflet bounds)
 │   ├── schemas/__init__.py         # ExecutionTrace graded contract
 │   ├── api/
 │   │   ├── __init__.py             # /health + /query
@@ -681,18 +725,18 @@ mvp/
 │   └── utils/chart.py              # heuristic chart (measured, not LLM)
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                 # 🗺️ GIS workspace: MapView + LayerControl + SceneCards + SpectralPanel (3-zone + map)
+│   │   ├── App.tsx                 # 🗺️ GIS workspace: MapView + LayerControl + SceneCards + SpectralPanel (3-zone + map) + ActiveSceneContext
 │   │   ├── api/                    # mockClient, satelliteClient, spectralClient
 │   │   ├── types/                  # api.ts, satellite.ts
 │   │   ├── utils/geojson.ts        # isValidGeoJSON, bounds, sceneToGeoJSON
-│   │   └── components/             # Header, ImageUploader, ImageryViewer, MapView (Leaflet), LayerControl, SceneCards, SceneMetadataPanel, SpectralPanel, SpectralLegend, ResultsPanel, ChartPanel, ...
+│   │   └── components/             # Header, ImageUploader, ImageryViewer, MapView (Leaflet), LayerControl, SceneCards, SceneMetadataPanel, SpectralPanel, SpectralLegend, ActiveSceneContext, ResultsPanel, ChartPanel, ...
 │   ├── vite.config.ts              # proxy /api → 8000
 │   └── package.json                # React 18 + Vite 6 + leaflet/react-leaflet/leaflet-draw
 ├── training/
 │   ├── notebooks/                  # satquery_ai_qlora_finetune.ipynb + vrsbench_rsvqa_sft.ipynb + cdvqa_change_sft.ipynb
 │   └── configs/                    # bigearthnet_stage1.json, vrsbench_rsvqa_stage2.json, cdvqa_stage3.json
 ├── data/loaders/                   # dataset-specific loaders
-├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py
+├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py, test_scene_query.py
 ├── docs/
 │   ├── execution_trace_schema.md
 │   ├── hf_spaces.md

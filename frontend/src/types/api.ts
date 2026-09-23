@@ -17,6 +17,10 @@ export interface QueryRequest {
   query: string;
   input_mode: InputMode;
   images: File[];
+  /** Selected Satellite Image Query Mode: analyze this ACTIVE scene's real assets. */
+  scene?: import("./satellite").SatelliteScene | Record<string, unknown>;
+  /** Optional AOI GeoJSON polygon to clip analysis to (EPSG:4326). */
+  aoi?: Record<string, unknown>;
 }
 
 /** Execution trace — graded deliverable per problem statement */
@@ -69,6 +73,10 @@ export interface QueryResponse {
   structured?: StructuredOutput | null;
   chart?: ChartEntry[] | null;
   chart_type?: ChartType | null;
+  /** Active scene this query was analyzed against (id, collection, datetime, aoi…). */
+  scene_context?: Record<string, unknown> | null;
+  /** Raster payload for map overlay (spectral index preview_b64/bounds/stats, or scene image). */
+  analysis?: Record<string, unknown> | null;
 }
 
 /** Application error shape */
