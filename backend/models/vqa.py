@@ -345,9 +345,11 @@ def predict(
 
     image = pil_images[0]
 
+    logger.info("[VQA INPUT QUERY] %r task=%r", query, task)
     # Build Qwen2-VL chat messages — detailed analyst persona via system prompt
     # Task-aware: grounding/change keep concise, vqa/captioning gets detailed suffix
     q_text = query.strip()
+    logger.info("[VQA MODEL INPUT] q_text=%r (original query=%r)", q_text, query)
     # Append detail suffix for very short generic queries to elicit percentages/locations
     if len(q_text.split()) <= 6 and task in ("vqa", "captioning", "visual_question_answering"):
         q_text = q_text + _DETAIL_SUFFIX
@@ -366,7 +368,9 @@ def predict(
 
     try:
         prompt_text = _processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        logger.info("[VQA PROMPT] %r", prompt_text[:800])
         inputs = _processor(text=[prompt_text], images=[image], return_tensors="pt", padding=True)
+        logger.info("[VQA MODEL INPUT] input_ids shape=%r", getattr(inputs.get("input_ids"), "shape", "unknown") if isinstance(inputs, dict) else "unknown")
 
         # Move to model device — GPU whenever available
         assert torch is not None

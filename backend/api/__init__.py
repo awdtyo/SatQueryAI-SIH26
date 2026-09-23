@@ -80,6 +80,7 @@ async def query(
         real assets instead of uploaded demo images (Selected Satellite Image
         Query Mode). No image files required in this mode.
     """
+    logger.info("[USER QUERY] %r", query_text)
     if not query_text or not query_text.strip():
         raise HTTPException(status_code=400, detail="query must be non-empty")
 

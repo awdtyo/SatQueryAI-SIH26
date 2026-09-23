@@ -26,6 +26,10 @@ def synthesize_answer(
       artifacts: list
     Never fabricates scientific measurements; only uses real specialist outputs.
     """
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("[ANSWER SYNTHESIS INPUT] query=%r task=%r specialist_answer=%r", query, task, str(specialist_results[0].get("answer", "") if specialist_results else "")[:200])
     findings: list[dict[str, Any]] = []
     limitations: list[str] = []
     metrics: dict[str, Any] = {}
@@ -154,6 +158,10 @@ def synthesize_answer(
         if "confidence" not in base_answer.lower():
             base_answer = base_answer.rstrip() + "\n\n" + confidence_note.strip()
 
+    import logging
+
+    logger = logging.getLogger(__name__)
+    logger.info("[ANSWER SYNTHESIS OUTPUT] answer=%r findings=%d limitations=%d", base_answer[:500], len(findings), len(limitations))
     return {
         "answer": base_answer,
         "findings": findings[:6],

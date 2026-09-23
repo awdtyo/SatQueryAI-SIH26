@@ -716,12 +716,16 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     uploaded images: NL queries are analyzed against that scene's real band assets.
     """
     t0 = time.time()
+    logger.info("[USER QUERY] %r", query)
+    logger.info("[REQUEST PAYLOAD] query=%r input_mode=%r images=%d scene=%s", query, input_mode, len(images) if images else 0, "yes" if scene else "no")
+    logger.info("[PLANNER INPUT] query=%r input_mode=%r", query, input_mode)
     logger.info("Controller: query=%r mode=%s images=%d scene=%s", (query or "")[:80], input_mode, len(images) if images else 0, "yes" if scene else "no")
 
     # 2. Classify first (needed to decide if validation can be skipped for retrieval)
     task = classify_task(query, input_mode)
     # Scene-aware rerouting — quantitative cover/water/built NL on an ACTIVE scene -> spectral
     task = _classify_scene_query(query, task, scene, aoi)
+    logger.info("[PLANNER INTENT] task=%r for query=%r", task, query)
     logger.info("Controller: classified task=%s", task)
 
     # Satellite retrieval path — no image validation required, needs AOI
@@ -1075,6 +1079,8 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # 3. Route to specialist via registry
     specialist = registry.get_specialist(task)
     specialist_name = getattr(specialist, "__name__", str(specialist))
+    logger.info("[SELECTED SPECIALIST] %r for query=%r task=%r", specialist_name, query, task)
+    logger.info("[SPECIALIST QUERY] %r", query)
     # Derive a friendly model name for the trace
     try:
         model_info = specialist.get_model_info()  # type: ignore
@@ -1089,6 +1095,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # 4. Invoke specialist
     invoke_start = time.time()
     try:
+        logger.info("[VQA INPUT QUERY] %r (via specialist %r)", query, task)
         result = registry.predict(pil_images, query, task)
     except Exception as e:
         # Specialist failed — do not crash server; return a traced error answer
@@ -1293,6 +1300,8 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         chart_list = fb_chart
         chart_type = "distribution"  # type: ignore
 
+    logger.info("[FINAL RESPONSE] query=%r answer=%r chart=%r viz_title=%r", query, answer[:300], chart_list, visualization.get("title") if visualization else None)
+    logger.info("[FRONTEND RESPONSE] answer_len=%d viz_valid=%s", len(answer), bool(visualization))
     return QueryResponse(
         answer=answer,
         confidence=confidence,
