@@ -234,7 +234,7 @@ def parse_spectral_params(query: str) -> dict[str, Any]:
             return {"index": cand.upper(), "intent": "spectral_index"}
     if "vegetation" in q or "veg " in f" {q} ":
         return {"index": "NDVI", "intent": "spectral_index"}
-    if "water" in q and ("index" in q or "bodies" in q or "body" in q or "how much" in q or "% water" in q or "water present" in q):
+    if "water" in q and "index" in q:
         return {"index": "NDWI", "intent": "spectral_index"}
     if "built" in q or "urban" in q:
         return {"index": "NDBI", "intent": "spectral_index"}
@@ -372,360 +372,19 @@ def classify_task(query: str, input_mode: str) -> str:
     return "vqa"
 
 
-# --- Selected Satellite Image Query Mode: scene-aware routing ---
-
-def _classify_scene_query(query: str, base_task: str, scene: dict[str, Any] | None, aoi: dict[str, Any] | None) -> str:
-    """Reroute quantitative cover/water/built queries when a scene is ACTIVE.
-
-    Selected Satellite Image Query Mode: asking "How much vegetation?", "Are there
-    water bodies?" or "% built-up" about a selected scene is a real raster question,
-    so it routes to the spectral-index agent (real band math) instead of a VQA model
-    hallucinating numbers. Plain uploaded-image VQA is untouched (scene is None).
-    """
-    if not scene:
-        return base_task
-    q = query.lower()
-    # Explicit index / retrieval intents keep their routing
-    if base_task in ("spectral_index", "satellite_retrieval"):
-        return base_task
-
-    quant = ["how much", "how many", "%", "percent", "amount", "area", "coverage", "present", "there", "calculate", "index"]
-    if ("vegetation" in q or f"veg " in f" {q} ") and any(w in q for w in quant):
-        return "spectral_index"
-    if "water" in q and any(w in q for w in ["bodies", "body", *quant]):
-        return "spectral_index"
-    if ("built-up" in q or "built up" in q or "builtup" in q or "urban" in q) and any(w in q for w in ["how much", "how many", "%", "percent", "area", "cover", "calculate"]):
-        return "spectral_index"
-    if "bare soil" in q or ("soil" in q and "bare" in q):
-        if any(w in q for w in ["%", "how much", "area", "there"]):
-            return "spectral_index"
-    return base_task
-
-
-def _scene_ctx(scene: dict[str, Any] | Any, aoi: dict[str, Any] | None = None, source: str | None = None) -> dict[str, Any]:
-    """Flatten a scene (dict or SatelliteScene) into a small context dict for the trace."""
-    if isinstance(scene, dict):
-        scene_id = str(scene.get("id") or scene.get("scene_id") or "unknown")
-        collection = str(scene.get("collection") or "sentinel-2-l2a")
-        dt = scene.get("datetime")
-        platform = scene.get("platform")
-        cloud = scene.get("cloud_cover")
-        bbox = scene.get("bbox")
-        thumb = scene.get("thumbnail")
-    else:
-        scene_id = str(getattr(scene, "id", "unknown"))
-        collection = str(getattr(scene, "collection", "sentinel-2-l2a"))
-        dt = getattr(scene, "datetime", None)
-        platform = getattr(scene, "platform", None)
-        cloud = getattr(scene, "cloud_cover", None)
-        bbox = getattr(scene, "bbox", None)
-        thumb = getattr(scene, "thumbnail", None)
-    out: dict[str, Any] = {
-        "scene_id": scene_id,
-        "collection": collection,
-        "datetime": str(dt) if dt else None,
-        "platform": platform,
-        "cloud_cover": cloud,
-        "bbox": bbox,
-        "thumbnail": thumb,
-    }
-    if aoi:
-        out["aoi"] = aoi
-    if source:
-        out["analysis_source"] = source
-    return out
-
-
-def _enrich_with_spatial_descriptions(
-    result: dict[str, Any],
-    pil_images: list[Any] | None = None,
-    query: str | None = None,
-) -> dict[str, Any]:
-    """Deterministic spatial description — enrich evidence/answer, preserve raw coordinates.
-
-    Uses backend.utils.spatial.describe_spatial_output lazily. Never hallucinates semantics.
-    Appends natural-language interpretation to answer if raw coordinates would otherwise be primary.
-    """
-    try:
-        from backend.utils.spatial import describe_spatial_output, describe_graph_output  # lazy, CPU-safe
-
-        evidence = result.get("evidence", []) or []
-        answer = str(result.get("answer", "") or "")
-        # Image dimensions for pixel→normalized conversion
-        img_dims: tuple[int, int] | None = None
-        try:
-            if pil_images and len(pil_images) > 0 and hasattr(pil_images[0], "size"):
-                w, h = pil_images[0].size  # type: ignore
-                img_dims = (int(w), int(h))
-        except Exception:
-            img_dims = None
-
-        # Gather coordinate-bearing evidence
-        coord_evs: list[dict[str, Any]] = []
-        all_coords: list[Any] = []
-        labels: list[str] | None = None
-        label_candidates: list[str] = []
-        for ev in evidence:
-            if isinstance(ev, dict) and ev.get("coordinates"):
-                coord_evs.append(ev)
-                all_coords.append(ev["coordinates"])
-                # Try to extract label from description without hallucinating
-                desc = str(ev.get("description", "") or "")
-                # If description already contains a semantic label from detector (e.g., "building 0.92"), keep first token if not stub
-                first = desc.strip().split()[0].lower() if desc.strip() else ""
-                if first and first not in ("[stub]",) and len(first) < 20:
-                    label_candidates.append(first)
-        # Also consider result-level coordinates/graph data
-        graph_coords = result.get("coordinates") or result.get("graph") or result.get("graph_data")
-        if graph_coords and not coord_evs:
-            # Treat graph_data as spatial output
-            try:
-                spatial = describe_graph_output(graph_coords, image_dimensions=img_dims)
-                result["spatial_description"] = spatial["description"]
-                result["spatial_provenance"] = {
-                    "description_source": "derived_from_coordinates",
-                    "coordinate_system": spatial["coordinate_system"],
-                    "input_coordinates": spatial["input_coordinates"],
-                    "image_dimensions": list(img_dims) if img_dims else None,
-                }
-                # Enrich answer if raw
-                raw_like = ("[" in answer and any(c.isdigit() for c in answer) and len(answer.strip()) < 300 and answer.count("[") >= 1)
-                wants_raw = query and "raw" in query.lower() and "coordinate" in query.lower()
-                if (raw_like or not answer.strip() or answer.strip().startswith("[")) and not wants_raw:
-                    # Prepend natural description, keep raw in evidence
-                    evidence.append(
-                        {
-                            "type": "coordinate_geometry",
-                            "description": spatial["description"],
-                            "coordinates": spatial["input_coordinates"] if isinstance(spatial["input_coordinates"], list) else [spatial["input_coordinates"]],
-                            "spatial_description": spatial["description"],
-                            "spatial_provenance": result["spatial_provenance"],
-                        }
-                    )
-                    result["evidence"] = evidence
-                    result["answer"] = spatial["description"] + "\n\nEvidence:\n" + answer[:500]
-                return result
-            except Exception:
-                pass
-
-        if not coord_evs:
-            # Check if answer itself looks like raw coordinates (e.g., "[0.0 0.5, 0 1.0]")
-            raw_like = False
-            try:
-                # Heuristic: many numbers with brackets/commas and little natural language
-                import re
-
-                nums = re.findall(r"[-+]?\d*\.?\d+", answer)
-                has_brackets = "[" in answer and "]" in answer
-                words = len(answer.split())
-                if has_brackets and len(nums) >= 4 and words < 20:
-                    raw_like = True
-                elif graph_coords:
-                    raw_like = True
-            except Exception:
-                pass
-            if raw_like:
-                # Still try to describe answer's coordinates
-                try:
-                    spatial = describe_graph_output(answer, image_dimensions=img_dims)
-                    result["spatial_description"] = spatial["description"]
-                    result["spatial_provenance"] = {
-                        "description_source": "derived_from_coordinates",
-                        "coordinate_system": spatial["coordinate_system"],
-                        "input_coordinates": spatial["input_coordinates"],
-                        "image_dimensions": list(img_dims) if img_dims else None,
-                    }
-                    wants_raw = query and "raw" in query.lower() and "coordinate" in query.lower()
-                    if not wants_raw:
-                        result["answer"] = spatial["description"] + "\n\nRaw coordinates preserved in evidence."
-                        result["evidence"] = [
-                            {
-                                "type": "coordinate_geometry",
-                                "description": spatial["description"],
-                                "coordinates": spatial["input_coordinates"] if isinstance(spatial["input_coordinates"], list) else [],
-                                "spatial_description": spatial["description"],
-                                "spatial_provenance": result["spatial_provenance"],
-                            }
-                        ]
-                except Exception:
-                    pass
-            return result
-
-        # Decide labels: only if we have consistent label_candidates from evidence, use them
-        use_labels: list[str] | None = None
-        if label_candidates and len(label_candidates) == len(coord_evs) and len(set(label_candidates)) <= 2:
-            # Only use if not generic stub terms
-            if not any("stub" in lc for lc in label_candidates):
-                use_labels = label_candidates
-
-        # Geographic hint: if any evidence has geographic metadata or query mentions lat/lon, mark geographic
-        coord_system: str = "auto"  # type: ignore
-        if query and any(k in query.lower() for k in ["latitude", "longitude", "lat ", "lon ", "geographic", "gps"]):
-            coord_system = "geographic"  # type: ignore
-
-        # Batch describe all regions together for coherent count/positions
-        try:
-            # For batch, pass list of coordinates
-            # If all_coords are bboxes as [[x1,y1],[x2,y2]], we keep as is
-            spatial = describe_spatial_output(all_coords, coordinate_system=coord_system, image_dimensions=img_dims, labels=use_labels)  # type: ignore
-        except Exception as e:
-            logger.debug("Spatial describe batch failed: %s", e)
-            return result
-
-        # Enrich each evidence with spatial provenance, preserving raw
-        for ev in coord_evs:
-            if "spatial_description" not in ev:
-                ev["spatial_description"] = spatial["description"]
-                ev["spatial_provenance"] = {
-                    "description_source": "derived_from_coordinates",
-                    "coordinate_system": spatial["coordinate_system"],
-                    "input_coordinates": ev.get("coordinates"),
-                    "image_dimensions": list(img_dims) if img_dims else None,
-                }
-                # Update description to be natural-language interpretation (primary user-facing) but keep hint of original
-                # Do not overwrite if description already contains spatial language and looks good
-                if len(ev.get("description", "")) < 80 or "[STUB]" in ev.get("description", ""):
-                    ev["description"] = spatial["description"].split(".")[0] + "." if "." in spatial["description"] else spatial["description"]
-
-        # Enrich answer if it is raw-like or lacks spatial context and we have spatial evidence
-        wants_raw = query and ("raw" in query.lower() and "coordinate" in query.lower())
-        if not wants_raw:
-            # Check if answer already contains spatial language (e.g., upper-left)
-            has_spatial_lang = any(k in answer.lower() for k in ["upper", "lower", "center", "left", "right", "portion of the image", "detected region"])
-            if not has_spatial_lang:
-                # If answer is raw coordinates, replace with natural description (raw preserved in evidence)
-                import re
-
-                nums = re.findall(r"[-+]?\d*\.?\d+", answer)
-                is_raw_answer = "[" in answer and "]" in answer and len(nums) >= 4 and len(answer.split()) < 20
-                if is_raw_answer:
-                    result["answer"] = spatial["description"]
-                elif len(answer.strip()) < 30:
-                    result["answer"] = spatial["description"] + ("\n\n" + answer if answer.strip() else "")
-                else:
-                    # Prepend spatial interpretation
-                    result["answer"] = spatial["description"] + "\n\n" + answer
-
-        result["spatial_description"] = spatial["description"]
-        result["spatial_provenance"] = {
-            "description_source": "derived_from_coordinates",
-            "coordinate_system": spatial["coordinate_system"],
-            "input_coordinates": spatial["input_coordinates"],
-            "image_dimensions": list(img_dims) if img_dims else None,
-        }
-        result["evidence"] = evidence
-    except Exception as e:
-        logger.debug("Spatial enrichment skipped: %s", e)
-    return result
-
-
-def _is_quantitative_query(query: str) -> bool:
-    """Return True if query expects quantitative visualization."""
-    q = (query or "").lower()
-    keywords = [
-        "how many",
-        "count",
-        "number of",
-        "chart",
-        "graph",
-        "distribution",
-        "percentage",
-        "percent",
-        "spectral",
-        "ndvi",
-        "ndwi",
-        "ndbi",
-        "ndmi",
-        "savi",
-        "bsi",
-        "nbr",
-        "mndwi",
-        "change",
-        "compare",
-        "plot",
-        "statistic",
-        "histogram",
-        "bar",
-        "pie",
-    ]
-    return any(k in q for k in keywords)
-
-
-def _build_structured(result: dict[str, Any], task: str) -> tuple[Any, list[Any] | None, str | None]:
-    """Extract StructuredOutput/ChartEntry from a specialist result (shared by all paths)."""
-    from backend.schemas import ChartEntry, StructuredOutput
-
-    structured = result.get("_structured")
-    chart = result.get("_chart")
-    chart_type_raw = result.get("_chart_type") or (structured.get("chart_type") if isinstance(structured, dict) else None)
-    structured_obj: StructuredOutput | None = None
-    chart_list: list[ChartEntry] | None = None
-    chart_type: str | None = None
-    try:
-        if isinstance(chart_type_raw, str) and chart_type_raw in ("distribution", "count", "change", "none"):
-            chart_type = chart_type_raw
-        elif task == "count":
-            chart_type = "count"
-        elif task in ("change_detection", "change"):
-            chart_type = "change"
-        elif task in ("vqa", "captioning", "visual_question_answering"):
-            chart_type = "distribution"
-        else:
-            chart_type = None
-
-        if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
-            bullets = [str(b) for b in structured.get("bullets", [])[:6]]
-            chart_entries: list[ChartEntry] = []
-            for c in structured.get("chart", [])[:5]:
-                if isinstance(c, dict) and "label" in c and "value" in c:
-                    try:
-                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
-                    except Exception:
-                        continue
-            if isinstance(structured.get("chart_type"), str):
-                chart_type = structured.get("chart_type")
-            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries, chart_type=chart_type)  # type: ignore
-            chart_list = chart_entries
-        elif isinstance(chart, list) and chart:
-            chart_entries = []
-            for c in chart[:5]:
-                if isinstance(c, dict) and "label" in c and "value" in c:
-                    try:
-                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
-                    except Exception:
-                        continue
-            if chart_entries:
-                structured_obj = StructuredOutput(bullets=[], chart=chart_entries, chart_type=chart_type)  # type: ignore
-                chart_list = chart_entries
-        # If structured still None but we have chart_type, create empty structured for type propagation
-        if structured_obj is None and chart_type is not None:
-            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=chart_type)  # type: ignore
-    except Exception as e:
-        logger.warning("Structured parse failed: %s", e)
-    return structured_obj, chart_list, chart_type  # type: ignore
-
-
 # --- Orchestration ---
 
-def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_geometry: dict[str, Any] | None = None, retrieval_params: dict[str, Any] | None = None, scene: dict[str, Any] | None = None, aoi: dict[str, Any] | None = None) -> QueryResponse:
+def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_geometry: dict[str, Any] | None = None, retrieval_params: dict[str, Any] | None = None) -> QueryResponse:
     """Main controller entrypoint — validates, classifies, routes, merges, traces.
 
     Called by API route handler. Never imports backend.models directly; goes via registry.
     For satellite_retrieval, images are optional if retrieval_geometry is provided.
-    For selected-satellite-image mode, an active `scene` (SatelliteScene dict) replaces
-    uploaded images: NL queries are analyzed against that scene's real band assets.
     """
     t0 = time.time()
-    logger.info("[USER QUERY] %r", query)
-    logger.info("[REQUEST PAYLOAD] query=%r input_mode=%r images=%d scene=%s", query, input_mode, len(images) if images else 0, "yes" if scene else "no")
-    logger.info("[PLANNER INPUT] query=%r input_mode=%r", query, input_mode)
-    logger.info("Controller: query=%r mode=%s images=%d scene=%s", (query or "")[:80], input_mode, len(images) if images else 0, "yes" if scene else "no")
+    logger.info("Controller: query=%r mode=%s images=%d", (query or "")[:80], input_mode, len(images) if images else 0)
 
     # 2. Classify first (needed to decide if validation can be skipped for retrieval)
     task = classify_task(query, input_mode)
-    # Scene-aware rerouting — quantitative cover/water/built NL on an ACTIVE scene -> spectral
-    task = _classify_scene_query(query, task, scene, aoi)
-    logger.info("[PLANNER INTENT] task=%r for query=%r", task, query)
     logger.info("Controller: classified task=%s", task)
 
     # Satellite retrieval path — no image validation required, needs AOI
@@ -794,7 +453,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             result = {"answer": f"Satellite retrieval failed: {e}", "evidence": [], "confidence": 0.0, "_latency_ms": int((time.time() - invoke_start) * 1000), "_error": str(e)}
             is_stub = True
 
-        result = _enrich_with_spatial_descriptions(result, pil_images=None, query=query)
         latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
         answer = str(result.get("answer", ""))
         confidence = float(result.get("confidence", 0.5))
@@ -838,64 +496,24 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             evidence_refs=evidence_refs,
             total_latency_ms=total_latency,
         )
-        # Structured for retrieval: build fallback visualization from real CDSE metadata
+        # Structured for retrieval: we can pass trace as structured for UI
         from backend.schemas import StructuredOutput
 
-        # Use fallback to ensure every successful retrieval has a graph (e.g., cloud cover, scenes retrieved)
-        try:
-            from backend.utils.visualization import build_fallback_visualization, validate_visualization
-
-            fb_chart, fb_type, fb_viz = build_fallback_visualization(
-                task, query, result, None, evidence_raw, confidence, structured, aoi
-            )
-            # Try to enrich with actual satellite trace stats if available
-            if not fb_viz or not validate_visualization(fb_viz):
-                # Fallback to sat_trace stats
-                if sat_trace:
-                    chart_entries = []
-                    if isinstance(sat_trace.get("results_found"), (int, float)):
-                        chart_entries.append({"label": "Scenes found", "value": float(sat_trace["results_found"])})
-                    if isinstance(sat_trace.get("results_after_filtering"), (int, float)):
-                        chart_entries.append({"label": "Filtered", "value": float(sat_trace["results_after_filtering"])})
-                    if chart_entries:
-                        from backend.schemas import ChartEntry
-
-                        fb_chart = [ChartEntry(label=c["label"], value=c["value"]) for c in chart_entries]  # type: ignore
-                        fb_type = "bar"
-                        fb_viz = {"type": "bar", "title": "Retrieval stats", "data": chart_entries}
-            if fb_viz and validate_visualization(fb_viz):
-                structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
-                chart, chart_type, visualization = fb_chart, fb_type, fb_viz
-            else:
-                raise ValueError("Fallback invalid")
-        except Exception:
-            from backend.schemas import ChartEntry
-
-            fb_chart = [ChartEntry(label="Scenes", value=float(sat_trace.get("results_found", 1) if sat_trace else 1))]
-            visualization = {"type": "bar", "title": "Retrieval", "data": [{"label": "Scenes", "value": float(sat_trace.get("results_found", 1) if sat_trace else 1)}]}
-            chart, chart_type = fb_chart, "bar"
-            structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="bar")  # type: ignore
-
+        structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
         return QueryResponse(
             answer=answer,
             confidence=confidence,
             execution_trace=trace,
             evidence=evidence_refs,
             structured=structured_obj,
-            chart=chart,
-            chart_type=chart_type,  # type: ignore
-            visualization=visualization,
+            chart=None,
+            chart_type=None,
         )
 
     # Spectral-index path — no image validation, needs scene + AOI
     if task == "spectral_index":
         # Retrieve index and scene from params or query
-        spec_params = dict(retrieval_params or {})
-        # Merge active-scene context (Selected Satellite Image Query Mode)
-        if scene:
-            spec_params.setdefault("scene", scene)
-        if aoi:
-            spec_params.setdefault("aoi", aoi)
+        spec_params = retrieval_params or {}
         # Try to parse index from query if not in params
         parsed = parse_spectral_params(query)
         index = spec_params.get("index") or spec_params.get("spectral_index") or parsed.get("index") or "NDVI"
@@ -929,8 +547,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
                 structured=None,
                 chart=None,
                 chart_type=None,
-                scene_context=_scene_ctx(scene, aoi=aoi) if scene else None,
-                analysis={"type": "spectral_error", "index": index, "error": "missing scene or AOI"},
             )
         # Route to spectral agent
         specialist = registry.get_specialist(task)
@@ -955,7 +571,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             logger.error("Spectral agent failed: %s", e, exc_info=True)
             result = {"answer": f"Spectral processing failed for {index}: {e}", "evidence": [], "confidence": 0.0, "_latency_ms": int((time.time() - invoke_start) * 1000), "_error": str(e)}
             is_stub = True
-        result = _enrich_with_spatial_descriptions(result, pil_images=None, query=query)
         latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
         answer = str(result.get("answer", ""))
         confidence = float(result.get("confidence", 0.5))
@@ -1001,76 +616,15 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         )
         from backend.schemas import StructuredOutput
 
-        # Build fallback visualization for spectral (uses actual NDVI stats if available)
-        try:
-            from backend.utils.visualization import build_fallback_visualization, validate_visualization
-
-            fb_chart, fb_type, fb_viz = build_fallback_visualization(
-                task, query, result, None, evidence_raw, confidence, scene, aoi
-            )
-            # Prefer spectral stats if fallback didn't pick them
-            if not fb_viz or not validate_visualization(fb_viz):
-                # Try to build from spectral stats directly
-                stats = spec_data.get("stats", {}) if isinstance(spec_data, dict) else {}
-                if stats and isinstance(stats, dict):
-                    chart_entries = []
-                    for k in ["min", "mean", "max", "median"]:
-                        if k in stats and isinstance(stats[k], (int, float)):
-                            chart_entries.append({"label": k.title(), "value": float(stats[k])})
-                    if chart_entries:
-                        from backend.schemas import ChartEntry
-
-                        fb_chart = [ChartEntry(label=c["label"], value=c["value"]) for c in chart_entries]  # type: ignore
-                        fb_type = "bar"
-                        fb_viz = {"type": "bar", "title": f"{index} statistics", "data": chart_entries}
-            if fb_viz and validate_visualization(fb_viz):
-                structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
-                chart, chart_type, visualization = fb_chart, fb_type, fb_viz
-            else:
-                structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
-                chart, chart_type, visualization = None, None, None
-        except Exception:
-            from backend.schemas import StructuredOutput
-
-            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
-            chart, chart_type, visualization = None, None, None
-
-        # Ensure visualization always present for success
-        if visualization is None:
-            try:
-                from backend.utils.visualization import build_fallback_visualization
-
-                fb_chart2, fb_type2, fb_viz2 = build_fallback_visualization(
-                    task, query, result, None, evidence_raw, confidence, scene, aoi
-                )
-                chart, chart_type, visualization = fb_chart2, fb_type2, fb_viz2
-                structured_obj = StructuredOutput(bullets=[], chart=fb_chart2 or [], chart_type=fb_type2)  # type: ignore
-            except Exception:
-                from backend.schemas import ChartEntry
-
-                fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw)))]
-                visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw))}]}
-                chart, chart_type = fb_chart, "bar"
-                structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="bar")  # type: ignore
-
+        structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
         return QueryResponse(
             answer=answer,
             confidence=confidence,
             execution_trace=trace,
             evidence=evidence_refs,
             structured=structured_obj,
-            chart=chart,
-            chart_type=chart_type,  # type: ignore
-            visualization=visualization,
-            scene_context=_scene_ctx(scene, aoi=aoi, source="bands"),
-            analysis={**spec_data, "type": "spectral_index"},
-        )
-
-    # Selected Satellite Image Query Mode — analysis against a live scene's real assets.
-    # No uploaded images required: the active scene (from the satellite search) is the input.
-    if scene and not images:
-        return _handle_active_scene(
-            query=query, task=task, input_mode=input_mode, scene=scene, aoi=aoi, t0=t0
+            chart=None,
+            chart_type=None,
         )
 
     # 1. Validate (non-retrieval path)
@@ -1079,8 +633,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # 3. Route to specialist via registry
     specialist = registry.get_specialist(task)
     specialist_name = getattr(specialist, "__name__", str(specialist))
-    logger.info("[SELECTED SPECIALIST] %r for query=%r task=%r", specialist_name, query, task)
-    logger.info("[SPECIALIST QUERY] %r", query)
     # Derive a friendly model name for the trace
     try:
         model_info = specialist.get_model_info()  # type: ignore
@@ -1095,7 +647,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # 4. Invoke specialist
     invoke_start = time.time()
     try:
-        logger.info("[VQA INPUT QUERY] %r (via specialist %r)", query, task)
         result = registry.predict(pil_images, query, task)
     except Exception as e:
         # Specialist failed — do not crash server; return a traced error answer
@@ -1108,9 +659,6 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             "_error": str(e),
         }
         is_stub = True
-
-    # Spatial description enrichment — preserve raw coordinates, add natural-language interpretation
-    result = _enrich_with_spatial_descriptions(result, pil_images=pil_images, query=query)
 
     latency_ms = int((time.time() - invoke_start) * 1000)
     answer = str(result.get("answer", ""))
@@ -1161,451 +709,70 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         total_latency_ms=total_latency,
     )
 
-    # Answer synthesis — detailed, evidence-grounded, no hallucination
-    findings: list[dict[str, Any]] = []
-    limitations: list[str] = []
-    metrics: dict[str, Any] = {}
-    artifacts: list[dict[str, Any]] = []
-    try:
-        from backend.synthesis.answer import synthesize_answer
-
-        img_meta: dict[str, Any] = {}
-        if pil_images and len(pil_images) > 0 and hasattr(pil_images[0], "size"):
-            try:
-                w, h = pil_images[0].size  # type: ignore
-                img_meta = {"width": w, "height": h, "channels": len(getattr(pil_images[0], "mode", "RGB"))}
-            except Exception:
-                pass
-        synth = synthesize_answer(query, task, [result], evidence_raw, confidence, img_meta)
-        # Use synthesized answer if it improves over raw
-        synth_answer = str(synth.get("answer", "") or "").strip()
-        if synth_answer and len(synth_answer) > 10 and "did not produce" not in synth_answer.lower():
-            # Only replace if synthesized is not just fallback and adds value
-            if len(synth_answer) > len(answer) or any(k in synth_answer.lower() for k in ["portion", "region", "confidence", "evidence"]):
-                answer = synth_answer
-        findings = synth.get("findings", [])  # type: ignore
-        limitations = synth.get("limitations", [])  # type: ignore
-        metrics = synth.get("metrics", {})  # type: ignore
-        artifacts = synth.get("artifacts", [])  # type: ignore
-        # Merge limitations from synthesis with existing
-        if limitations:
-            # Add to trace parameters for provenance
-            trace.parameters["limitations"] = limitations[:3]
-    except Exception as e:
-        logger.debug(f"Answer synthesis failed: {e}")
-
     # Structured bullets/chart from specialist (question-aware)
-    structured_obj, chart_list, chart_type = _build_structured(result, task)
+    structured = result.get("_structured")
+    chart = result.get("_chart")
+    chart_type_raw = result.get("_chart_type") or (structured.get("chart_type") if isinstance(structured, dict) else None)
+    # Normalize to StructuredOutput shape
+    structured_obj = None
+    chart_list = None
+    chart_type: str | None = None
+    try:
+        # Determine chart_type from specialist or task
+        if isinstance(chart_type_raw, str) and chart_type_raw in ("distribution", "count", "change", "none"):
+            chart_type = chart_type_raw
+        elif task == "count":
+            chart_type = "count"
+        elif task in ("change_detection", "change"):
+            chart_type = "change"
+        elif task in ("vqa", "captioning", "visual_question_answering"):
+            chart_type = "distribution"
+        else:
+            chart_type = None
 
-    # Strict chart validation — ensure label/value are valid
-    if chart_list is not None:
-        valid_entries: list[Any] = []
-        for c in chart_list:
-            try:
-                if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
-                    if c.value != c.value or c.value in (float("inf"), float("-inf")):
+        if isinstance(structured, dict) and (structured.get("bullets") or structured.get("chart")):
+            from backend.schemas import ChartEntry, StructuredOutput
+
+            bullets = [str(b) for b in structured.get("bullets", [])[:6]]
+            chart_entries = []
+            for c in structured.get("chart", [])[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
                         continue
-                    if -100 <= c.value <= 1000:
-                        # Reject raw coordinate arrays accidentally used as chart
-                        if isinstance(c.value, (list, tuple)):
-                            continue
-                        valid_entries.append(c)
-            except Exception:
-                continue
-        if not valid_entries:
-            chart_list = None
-            chart_type = None  # type: ignore
-            if structured_obj:
-                structured_obj.chart = []
-                structured_obj.chart_type = None  # type: ignore
-        else:
-            chart_list = valid_entries
+            # Honor chart_type from structured if present
+            if isinstance(structured.get("chart_type"), str):
+                chart_type = structured.get("chart_type")
+            structured_obj = StructuredOutput(bullets=bullets, chart=chart_entries, chart_type=chart_type)  # type: ignore
+            chart_list = chart_entries
+        elif isinstance(chart, list) and chart:
+            from backend.schemas import ChartEntry, StructuredOutput
 
-    # For ordinary VQA without quantitative intent, do not use heuristic distribution as primary visualization
-    # Instead force fallback to evidence/metadata (semantic, not invented percentages)
-    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
-        # Keep specialist chart as secondary, but prioritize fallback
-        # Clear candidate so fallback will be used
-        if chart_list is not None and chart_type == "distribution":
-            # Check if chart is heuristic (vegetation/water etc.) — treat as not quantitative
-            heuristic_labels = {"vegetation", "water", "urban", "bare", "other"}
-            if any(c.label.lower() in heuristic_labels for c in chart_list):
-                import logging
-                logging.getLogger(__name__).debug(f"Nullifying heuristic chart for VQA query={query[:40]!r}")
-                chart_list = None
-                chart_type = None  # type: ignore
-                if structured_obj:
-                    structured_obj.chart = []
-                    structured_obj.chart_type = None  # type: ignore
-
-    # Visualization fallback pipeline — ensure EVERY successful query has a valid graph
-    visualization: dict[str, Any] | None = None
-    if chart_list is not None and chart_type is not None:
-        try:
-            from backend.utils.visualization import _chart_to_viz, validate_visualization
-
-            visualization = _chart_to_viz(chart_list, chart_type)
-            if not validate_visualization(visualization):
-                visualization = None
-                chart_list = None
-                chart_type = None  # type: ignore
-        except Exception:
-            visualization = None
-
-    if visualization is None:
-        try:
-            from backend.utils.visualization import build_fallback_visualization, validate_visualization
-
-            fb_chart, fb_type, fb_viz = build_fallback_visualization(
-                task, query, result, pil_images, evidence_raw, confidence, scene, aoi
-            )
-            if fb_viz and validate_visualization(fb_viz):
-                chart_list = fb_chart
-                chart_type = fb_type  # type: ignore
-                visualization = fb_viz
-                if structured_obj is None:
-                    from backend.schemas import StructuredOutput
-
-                    structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
-                else:
-                    structured_obj.chart = fb_chart or []
-                    structured_obj.chart_type = fb_type  # type: ignore
-            else:
-                # Last resort already handled inside build_fallback
-                chart_list = fb_chart
-                chart_type = fb_type  # type: ignore
-                visualization = fb_viz
-        except Exception as e:
-            logger.debug(f"Fallback visualization failed: {e}")
-            from backend.schemas import ChartEntry
-
-            fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
-            visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
-            chart_list = fb_chart
-            chart_type = "distribution"  # type: ignore
-            if structured_obj is None:
-                from backend.schemas import StructuredOutput
-
-                structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="distribution")  # type: ignore
-            else:
-                structured_obj.chart = fb_chart
-                structured_obj.chart_type = "distribution"  # type: ignore
-
-    # Ensure visualization always present for success
-    if visualization is None:
-        from backend.schemas import ChartEntry
-
-        fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
-        visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
-        chart_list = fb_chart
-        chart_type = "distribution"  # type: ignore
-
-    logger.info("[FINAL RESPONSE] query=%r answer=%r chart=%r viz_title=%r", query, answer[:300], chart_list, visualization.get("title") if visualization else None)
-    logger.info("[FRONTEND RESPONSE] answer_len=%d viz_valid=%s", len(answer), bool(visualization))
-    return QueryResponse(
-        answer=answer,
-        confidence=confidence,
-        execution_trace=trace,
-        evidence=evidence_refs,
-        findings=findings,
-        limitations=limitations,
-        metrics=metrics,
-        artifacts=artifacts,
-        structured=structured_obj,
-        chart=chart_list,
-        chart_type=chart_type,  # type: ignore
-        visualization=visualization,
-    )
-
-
-def _handle_active_scene(
-    query: str,
-    task: str,
-    input_mode: str,
-    scene: dict[str, Any],
-    aoi: dict[str, Any] | None,
-    t0: float,
-) -> QueryResponse:
-    """Analyze the SELECTED satellite scene (Selected Satellite Image Query Mode).
-
-    Resolves a real RGB composite from the scene's band assets (B04/B03/B02,
-    AOI-clipped) or falls back to the scene preview thumbnail, then routes to the
-    specialist with that image. The response carries an explicit `scene_context`
-    so the trace/provenance clearly records WHICH scene was analyzed.
-    """
-    from backend.scene.raster import resolve_scene_rgb
-
-    # Scene-based analysis is single-image only; change/fusion need uploaded pairs.
-    if task in ("change_detection", "change", "optical_sar_fusion", "fusion"):
-        total_latency = int((time.time() - t0) * 1000)
-        trace = ExecutionTrace(
-            task=task,
-            models_used=[
-                ModelTraceEntry(
-                    name="Active Scene Router",
-                    role="scene_analysis",
-                    parameters={"error": "change/fusion require bi-temporal or optical-sar image pairs"},
-                    latency_ms=0,
-                    is_real=True,
-                    is_stub=False,
-                )
-            ],
-            parameters={"input_mode": input_mode, "image_count": 1, "scene_context": _scene_ctx(scene, aoi=aoi)},
-            confidence=0.35,
-            evidence_refs=[],
-            total_latency_ms=total_latency,
-        )
-        return QueryResponse(
-            answer=f"Change detection / SAR fusion needs an image pair. Upload the T1/T2 (or optical+SAR) images, or ask a single-scene question about this active scene (e.g. describe, count, or a spectral index).",
-            confidence=0.35,
-            execution_trace=trace,
-            evidence=[],
-            structured=None,
-            chart=None,
-            chart_type=None,
-            scene_context=_scene_ctx(scene, aoi=aoi),
-            analysis=None,
-        )
-
-    # Resolve a real analysis image from the active scene's assets.
-    resolve_start = time.time()
-    try:
-        resolved = resolve_scene_rgb(scene, aoi=aoi)
-    except Exception as e:
-        err_str = str(e)
-        # Distinguish missing AOI vs. band download failure (s3://) for actionable message
-        has_aoi = bool(aoi and isinstance(aoi, dict) and aoi.get("type"))
-        if "No AOI drawn" in err_str or "no preview/thumbnail" in err_str.lower():
-            hint = "Draw an AOI polygon on the map for the active scene to analyze its real band data."
-        elif "s3://" in err_str or "No connection adapters" in err_str or "Failed to download band" in err_str:
-            hint = "This scene's band assets are stored as s3:// (CDSE) without an HTTPS alternate and could not be downloaded from this environment. Try another scene from the search results, or use the preview thumbnail — VQA/count will still work on thumbnail when bands are unavailable. For spectral indices (NDVI etc.), select a scene that exposes https:// assets."
-        elif not has_aoi:
-            hint = "Draw an AOI polygon on the map for the active scene to analyze its real band data."
-        else:
-            hint = "Try a different scene or redraw the AOI (smaller area) and retry. If the issue persists, the scene's assets may be temporarily unavailable from CDSE."
-        logger.warning("Active scene resolution failed for %s: %s", _scene_ctx(scene)["scene_id"], e)
-        total_latency = int((time.time() - t0) * 1000)
-        trace = ExecutionTrace(
-            task=task,
-            models_used=[
-                ModelTraceEntry(
-                    name="Active Scene Resolver",
-                    role="scene_asset_resolution",
-                    parameters={"error": err_str},
-                    latency_ms=int((time.time() - resolve_start) * 1000),
-                    is_real=True,
-                    is_stub=False,
-                )
-            ],
-            parameters={"input_mode": input_mode, "image_count": 1, "scene_context": _scene_ctx(scene, aoi=aoi)},
-            confidence=0.3,
-            evidence_refs=[],
-            total_latency_ms=total_latency,
-        )
-        return QueryResponse(
-            answer=f"{e}\n\n{hint}",
-            confidence=0.3,
-            execution_trace=trace,
-            evidence=[],
-            structured=None,
-            chart=None,
-            chart_type=None,
-            scene_context=_scene_ctx(scene, aoi=aoi),
-            analysis={"type": "active_scene_error", "error": err_str},
-        )
-
-    pil_image = resolved["image"]
-    image_source = resolved["source"]  # "bands" (AOI-clipped) or "thumbnail" fallback
-
-    # Route to the specialist with the resolved scene image.
-    specialist = registry.get_specialist(task)
-    specialist_name = getattr(specialist, "__name__", str(specialist))
-    try:
-        model_info = specialist.get_model_info()  # type: ignore
-        model_label = model_info.get("adapter_path") or model_info.get("base_model") or specialist_name
-        is_real = bool(model_info.get("is_real", False))
-        is_stub = bool(model_info.get("stub", False))
-    except Exception:
-        model_label = specialist_name
-        is_real = False
-        is_stub = True
-
-    invoke_start = time.time()
-    try:
-        result = registry.predict([pil_image], query, task)
-    except Exception as e:
-        logger.error("Specialist %s failed on active scene: %s", task, e, exc_info=True)
-        result = {
-            "answer": f"Specialist '{task}' failed on the selected scene: {e}",
-            "evidence": [],
-            "confidence": 0.0,
-            "_latency_ms": int((time.time() - invoke_start) * 1000),
-            "_error": str(e),
-        }
-        is_stub = True
-
-    result = _enrich_with_spatial_descriptions(result, pil_images=[pil_image], query=query)
-    latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
-    answer = str(result.get("answer", ""))
-    confidence = float(result.get("confidence", 0.5))
-    confidence = max(0.0, min(1.0, confidence))
-    evidence_raw = result.get("evidence", [])
-    total_latency = int((time.time() - t0) * 1000)
-
-    evidence_refs: list[EvidenceRef] = []
-    for ev in evidence_raw:
-        try:
-            evidence_refs.append(EvidenceRef(**ev))
-        except Exception:
-            logger.warning("Skipping malformed evidence: %r", ev)
-
-    # The analysis image came from the scene's real assets, not a user upload.
-    evidence_refs.append(
-        EvidenceRef(
-            type="image_ref",
-            description=f"Analysis image resolved from active scene {_scene_ctx(scene)['scene_id']} ({resolved.get('bands', []) or 'preview'} via {'real band assembly' if image_source == 'bands' else 'scene preview thumbnail'})",
-            image_index=0,
-        )
-    )
-
-    scene_ctx = _scene_ctx(scene, aoi=aoi, source=image_source)
-    model_entry = ModelTraceEntry(
-        name=model_label if isinstance(model_label, str) else specialist_name,
-        role=task,
-        parameters={
-            "input_mode": input_mode,
-            "image_count": 1,
-            "scene_context": scene_ctx,
-            "adapter_path": config.ADAPTER_PATH,
-            "base_model": config.BASE_MODEL,
-        },
-        latency_ms=latency_ms,
-        is_real=is_real and not bool(result.get("_stub", False)),
-        is_stub=bool(result.get("_stub", False)) or is_stub,
-    )
-
-    trace = ExecutionTrace(
-        task=task,
-        models_used=[model_entry],
-        parameters={
-            "input_mode": input_mode,
-            "image_count": 1,
-            "band_subset": resolved.get("bands") or ["preview"],
-            "spatial_resolution_m": 10,
-            "scene_context": scene_ctx,
-        },
-        confidence=confidence,
-        evidence_refs=evidence_refs,
-        total_latency_ms=total_latency,
-    )
-
-    # Answer synthesis for active scene
-    findings: list[dict[str, Any]] = []
-    limitations: list[str] = []
-    metrics: dict[str, Any] = {}
-    artifacts: list[dict[str, Any]] = []
-    try:
-        from backend.synthesis.answer import synthesize_answer
-
-        synth = synthesize_answer(query, task, [result], evidence_raw, confidence, {"width": pil_image.size[0], "height": pil_image.size[1]})
-        synth_answer = str(synth.get("answer", "") or "").strip()
-        if synth_answer and len(synth_answer) > 10 and "did not produce" not in synth_answer.lower():
-            if len(synth_answer) > len(answer) or any(k in synth_answer.lower() for k in ["portion", "region", "confidence"]):
-                answer = synth_answer
-        findings = synth.get("findings", [])  # type: ignore
-        limitations = synth.get("limitations", [])  # type: ignore
-        metrics = synth.get("metrics", {})  # type: ignore
-        artifacts = synth.get("artifacts", [])  # type: ignore
-    except Exception as e:
-        import logging
-
-        logging.getLogger(__name__).debug(f"Answer synthesis (active scene) failed: {e}")
-
-    structured_obj, chart_list, chart_type = _build_structured(result, task)
-
-    # Strict chart validation
-    if chart_list is not None:
-        valid_entries: list[Any] = []
-        for c in chart_list:
-            try:
-                if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
-                    if c.value != c.value or c.value in (float("inf"), float("-inf")):
+            chart_entries = []
+            for c in chart[:5]:
+                if isinstance(c, dict) and "label" in c and "value" in c:
+                    try:
+                        chart_entries.append(ChartEntry(label=str(c["label"]), value=float(c["value"])))
+                    except Exception:
                         continue
-                    if -100 <= c.value <= 1000 and not isinstance(c.value, (list, tuple)):
-                        valid_entries.append(c)
-            except Exception:
-                continue
-        if not valid_entries:
-            chart_list = None
-            chart_type = None  # type: ignore
-            if structured_obj:
-                structured_obj.chart = []
-                structured_obj.chart_type = None  # type: ignore
-        else:
-            chart_list = valid_entries
+            if chart_entries:
+                structured_obj = StructuredOutput(bullets=[], chart=chart_entries, chart_type=chart_type)  # type: ignore
+                chart_list = chart_entries
+        # If structured still None but we have chart_type, create empty structured for type propagation
+        if structured_obj is None and chart_type is not None:
+            from backend.schemas import StructuredOutput
 
-    # Visualization fallback — ensure every successful active-scene query has graph
-    visualization: dict[str, Any] | None = None
-    if chart_list is not None and chart_type is not None:
-        try:
-            from backend.utils.visualization import _chart_to_viz, validate_visualization
-
-            visualization = _chart_to_viz(chart_list, chart_type)
-            if not validate_visualization(visualization):
-                visualization = None
-                chart_list = None
-                chart_type = None  # type: ignore
-        except Exception:
-            visualization = None
-
-    if visualization is None:
-        try:
-            from backend.utils.visualization import build_fallback_visualization, validate_visualization
-
-            fb_chart, fb_type, fb_viz = build_fallback_visualization(
-                task, query, result, [pil_image], evidence_raw, confidence, scene, aoi
-            )
-            if fb_viz and validate_visualization(fb_viz):
-                chart_list = fb_chart
-                chart_type = fb_type  # type: ignore
-                visualization = fb_viz
-                if structured_obj is None:
-                    from backend.schemas import StructuredOutput
-
-                    structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
-                else:
-                    structured_obj.chart = fb_chart or []
-                    structured_obj.chart_type = fb_type  # type: ignore
-        except Exception as e:
-            logger.debug(f"Fallback visualization (active scene) failed: {e}")
-
-    if visualization is None:
-        from backend.schemas import ChartEntry
-
-        fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
-        visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
-        chart_list = fb_chart
-        chart_type = "distribution"  # type: ignore
+            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=chart_type)  # type: ignore
+    except Exception as e:
+        logger.warning("Structured parse failed: %s", e)
 
     return QueryResponse(
         answer=answer,
         confidence=confidence,
         execution_trace=trace,
         evidence=evidence_refs,
-        findings=findings,
-        limitations=limitations,
-        metrics=metrics,
-        artifacts=artifacts,
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
-        visualization=visualization,
-        scene_context=scene_ctx,
-        analysis={
-            "type": "active_scene_image",
-            "scene_id": _scene_ctx(scene)["scene_id"],
-            "source": image_source,
-            "bands": resolved.get("bands") or [],
-            "leaflet_bounds": resolved.get("leaflet_bounds"),
-        },
     )

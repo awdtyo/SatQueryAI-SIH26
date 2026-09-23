@@ -17,37 +17,12 @@ from pydantic import BaseModel, Field
 # --- Evidence ---
 
 class EvidenceRef(BaseModel):
-    model_config = {"extra": "allow"}  # allow provenance fields like spatial_description without breaking
-
-    type: Literal[
-        "bounding_box",
-        "overlay",
-        "heatmap",
-        "saliency",
-        "image_ref",
-        "coordinate_geometry",
-        "image_region",
-        "segmentation_mask",
-        "change_mask",
-        "derived_measurement",
-        "metadata",
-        "model_output",
-        "source_scene",
-        "execution_step",
-    ] = Field(
+    type: Literal["bounding_box", "overlay", "heatmap", "saliency", "image_ref"] = Field(
         description="Evidence modality"
     )
     description: str
     coordinates: list[list[float]] | None = None
     image_index: int | None = 0
-    # Spatial interpretation provenance — additive, preserves raw coordinates
-    spatial_description: str | None = Field(default=None, description="Natural-language interpretation of coordinates")
-    spatial_provenance: dict[str, Any] | None = Field(default=None, description="Provenance for spatial description")
-    bbox: list[float] | None = None
-    metric: str | None = None
-    value: float | None = None
-    source: str | None = None
-    metadata: dict[str, Any] | None = None
 
 
 # --- Execution trace ---
@@ -91,32 +66,12 @@ class StructuredOutput(BaseModel):
 
 class QueryResponse(BaseModel):
     answer: str
-    confidence: float | None = Field(default=None, ge=0.0, le=1.0, description="Model confidence if available, else null")
+    confidence: float = Field(ge=0.0, le=1.0)
     execution_trace: ExecutionTrace
     evidence: list[EvidenceRef] = Field(default_factory=list)
-    findings: list[dict[str, Any]] = Field(default_factory=list, description="Structured key findings supporting answer")
-    limitations: list[str] = Field(default_factory=list, description="Limitations when relevant")
-    metrics: dict[str, Any] = Field(default_factory=dict, description="Actual numeric measurements")
-    artifacts: list[dict[str, Any]] = Field(default_factory=list, description="Images, masks, overlays")
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
     chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
-    # Canonical visualization — always present for successful queries (fallback hierarchy)
-    visualization: dict[str, Any] | None = Field(default=None, description="Canonical visualization {type, title, data} always present for success")
-    # Active-scene context: set when the query was analyzed against a SELECTED satellite scene
-    # (Selected Satellite Image Query Mode). Carries the scene id/collection/datetime/aoi that
-    # was actually analyzed so the UI can render an "Active Scene" card + provenance.
-    scene_context: dict[str, Any] | None = Field(
-        default=None,
-        description="Active satellite scene context the query was analyzed against (scene id, collection, datetime, platform, cloud, aoi, analysis_source).",
-    )
-    # Raster payload for map overlay (spectral index preview_b64/bounds/stats, or scene RGB
-    # image info for VQA/count on the active scene). Kept separate from ExecutionTrace so the
-    # frontend can render a GIS layer without re-deriving it from trace parameters.
-    analysis: dict[str, Any] | None = Field(
-        default=None,
-        description="Raster analysis payload (type, preview_b64, bounds, stats, scene_id) for map overlay and evidence.",
-    )
 
 
 class HealthResponse(BaseModel):

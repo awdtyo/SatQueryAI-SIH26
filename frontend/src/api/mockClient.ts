@@ -16,13 +16,6 @@ export async function submitQuery(request: QueryRequest): Promise<QueryResponse>
   request.images.forEach((file) => {
     formData.append("images", file, file.name);
   });
-  // Selected Satellite Image Query Mode: active scene (+ optional AOI) instead of / alongside uploads
-  if (request.scene) {
-    formData.append("scene_json", JSON.stringify(request.scene));
-  }
-  if (request.aoi) {
-    formData.append("aoi_json", JSON.stringify(request.aoi));
-  }
 
   const res = await fetch("/api/query", {
     method: "POST",

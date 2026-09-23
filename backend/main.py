@@ -22,12 +22,6 @@ from backend.api import router as api_router
 from backend.api.satellite import router as satellite_router
 from backend.api.spectral import router as spectral_router
 
-# Unified agentic endpoints (analyze/upload/pair/provenance) — optional, graceful fallback
-try:
-    from backend.api.analyze import router as analyze_router
-except Exception:
-    analyze_router = None  # type: ignore
-
 logger = logging.getLogger("satquery")
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
@@ -124,8 +118,6 @@ _HAS_FRONTEND = _FRONTEND_DIST.exists() and (_FRONTEND_DIST / "index.html").exis
 app.include_router(api_router, prefix="/api")
 app.include_router(satellite_router, prefix="/api")
 app.include_router(spectral_router, prefix="/api")
-if analyze_router is not None:
-    app.include_router(analyze_router, prefix="/api")
 
 if _HAS_FRONTEND:
     assets_dir = _FRONTEND_DIST / "assets"
@@ -145,5 +137,3 @@ else:
 app.include_router(api_router)
 app.include_router(satellite_router)
 app.include_router(spectral_router)
-if analyze_router is not None:
-    app.include_router(analyze_router)

@@ -78,10 +78,10 @@ export default function SceneMetadataPanel({ scene, onSelectForAnalysis }: Props
 
         {onSelectForAnalysis && (
           <button onClick={() => onSelectForAnalysis(scene)} className="w-full py-2 rounded bg-accent text-surface-900 text-[12px] font-semibold hover:bg-accent-bright transition-colors">
-            🛰️ Query This Image →
+            Select for Analysis →
           </button>
         )}
-        <div className="text-[10px] text-ink-muted leading-relaxed">Makes this scene the ACTIVE satellite image — you can then ask NL questions (VQA / count / spectral indices) that run against its real band assets.</div>
+        <div className="text-[10px] text-ink-muted leading-relaxed">Selected scene stored in app state. Continue to existing VQA / change / counting with its band assets (future: `retrieve_scene_assets`).</div>
       </div>
     </div>
   );

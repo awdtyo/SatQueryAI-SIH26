@@ -17,10 +17,6 @@ export interface QueryRequest {
   query: string;
   input_mode: InputMode;
   images: File[];
-  /** Selected Satellite Image Query Mode: analyze this ACTIVE scene's real assets. */
-  scene?: import("./satellite").SatelliteScene | Record<string, unknown>;
-  /** Optional AOI GeoJSON polygon to clip analysis to (EPSG:4326). */
-  aoi?: Record<string, unknown>;
 }
 
 /** Execution trace — graded deliverable per problem statement */
@@ -45,12 +41,10 @@ export interface ModelTraceEntry {
 
 /** Reference to evidence (bbox, overlay, etc.) — mirrors backend/schemas EvidenceRef */
 export interface EvidenceRef {
-  type: "bounding_box" | "overlay" | "heatmap" | "saliency" | "image_ref" | "coordinate_geometry" | "image_region" | "segmentation_mask" | "change_mask" | "derived_measurement" | "metadata" | "model_output" | "source_scene" | "execution_step";
+  type: "bounding_box" | "overlay" | "heatmap" | "saliency" | "image_ref";
   description: string;
   coordinates?: number[][];
   image_index?: number;
-  spatial_description?: string;
-  spatial_provenance?: Record<string, unknown>;
 }
 
 /** Structured bullets/chart from backend (bullets replace paragraph) */
@@ -75,11 +69,6 @@ export interface QueryResponse {
   structured?: StructuredOutput | null;
   chart?: ChartEntry[] | null;
   chart_type?: ChartType | null;
-  visualization?: { type: string; title: string; data: ChartEntry[] } | null;
-  /** Active scene this query was analyzed against (id, collection, datetime, aoi…). */
-  scene_context?: Record<string, unknown> | null;
-  /** Raster payload for map overlay (spectral index preview_b64/bounds/stats, or scene image). */
-  analysis?: Record<string, unknown> | null;
 }
 
 /** Application error shape */

@@ -181,25 +181,7 @@ def _load_model() -> bool:
                 tmp_offload = "/tmp/satquery_offload"
                 os.makedirs(tmp_offload, exist_ok=True)
                 offload_kwargs = {"offload_folder": tmp_offload}
-
-            # Adapter was trained against an older Qwen2-VL module layout
-            # (base_model.model.model.layers.*); current model uses
-            # base_model.model.model.language_model.layers.*. PEFT's
-            # load_peft_weights() strips "base_model.model." before applying
-            # key_mapping and auto-inserts adapter name `default`, so mapping
-            # must target stripped key ("model.layers." -> "model.language_model.layers.")
-            # and must NOT include `.default`.
-            adapter_key_mapping = {
-                "model.layers.": "model.language_model.layers.",
-            }
-
-            _model = PeftModel.from_pretrained(
-                base_model,
-                adapter_id,
-                token=hf_token,
-                key_mapping=adapter_key_mapping,
-                **offload_kwargs,
-            )
+            _model = PeftModel.from_pretrained(base_model, adapter_id, token=hf_token, **offload_kwargs)
             # Merge is optional for inference; keep adapter separate for clarity
             _is_real = True
             logger.info("VQA: adapter loaded successfully from %s", adapter_id)
@@ -345,11 +327,9 @@ def predict(
 
     image = pil_images[0]
 
-    logger.info("[VQA INPUT QUERY] %r task=%r", query, task)
     # Build Qwen2-VL chat messages — detailed analyst persona via system prompt
     # Task-aware: grounding/change keep concise, vqa/captioning gets detailed suffix
     q_text = query.strip()
-    logger.info("[VQA MODEL INPUT] q_text=%r (original query=%r)", q_text, query)
     # Append detail suffix for very short generic queries to elicit percentages/locations
     if len(q_text.split()) <= 6 and task in ("vqa", "captioning", "visual_question_answering"):
         q_text = q_text + _DETAIL_SUFFIX
@@ -368,9 +348,7 @@ def predict(
 
     try:
         prompt_text = _processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        logger.info("[VQA PROMPT] %r", prompt_text[:800])
         inputs = _processor(text=[prompt_text], images=[image], return_tensors="pt", padding=True)
-        logger.info("[VQA MODEL INPUT] input_ids shape=%r", getattr(inputs.get("input_ids"), "shape", "unknown") if isinstance(inputs, dict) else "unknown")
 
         # Move to model device — GPU whenever available
         assert torch is not None
@@ -540,23 +518,6 @@ def predict(
     # Remove any stray JSON fence the model may still emit (chart is heuristic now)
     if "```json" in answer:
         answer = re.sub(r"```json\s*\{.*?\}\s*```", "", answer, flags=re.DOTALL).strip()
-    # Check for raw coordinates as answer — do not treat as natural language
-    try:
-        nums = re.findall(r"[-+]?\d*\.?\d+", answer)
-        has_brackets = "[" in answer and "]" in answer
-        words = len(answer.split())
-        if has_brackets and len(nums) >= 4 and words < 20:
-            try:
-                from backend.utils.spatial import describe_graph_output
-
-                spatial = describe_graph_output(answer, image_dimensions=image.size)
-                answer = spatial["description"]
-                bullets = []
-            except Exception:
-                answer = "The model did not produce a usable natural-language answer for this query."
-                bullets = []
-    except Exception:
-        pass
     if not bullets and answer.strip():
         # Split answer sentences into bullets if model ignored format
         sents = re.split(r"(?<=[.!?])\s+", answer.strip())

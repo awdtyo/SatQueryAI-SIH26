@@ -137,44 +137,6 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 
 ---
 
-### Natural-Language Spatial Interpretation
-
-SatQuery preserves raw coordinates/visualizations while automatically converting spatial outputs into human-readable descriptions via `backend/utils/spatial.py` (deterministic, no LLM).
-
-**Flow:** `Raw Model Output → Evidence Extraction → Spatial Description Generator → Evidence Fusion → Natural-Language Answer + Raw Evidence/Graph`
-
-- Coordinates stay in `evidence.coordinates` and `spatial_provenance.input_coordinates` for visualization/debugging.
-- `description` becomes user-facing interpretation; `spatial_provenance` records `description_source: derived_from_coordinates`, `coordinate_system`, `image_dimensions`.
-
-**Coordinate-system aware:**
-- **Normalized** `0≤x≤1` → image-relative `upper-left/center/lower-right` (+ extent if bbox)
-- **Pixel** `x=125,y=340` → normalized via `image_dimensions` → same image-relative language
-- **Geographic** `lat/lon` → `centered near the provided geographic coordinates` (never mis-described as image position)
-- **Unknown** → `coordinate regions were detected, but their coordinate reference system is not available`
-
-**Example:**
-```text
-Raw output:
-[0.1, 0.2, 0.4, 0.6]
-
-Natural-language interpretation:
-A detected region occupies the upper-left to central portion of the image and occupies a small area near the upper-center.
-
-Graph raw [0.0 0.5,0 1.0] etc:
-Three spatial regions were identified in the image. Their positions are distributed across different portions of the scene, including areas toward the upper-left, central, and lower portions of the image.
-
-Evidence preserved:
-{
-  "coordinates": [[0.1,0.2],[0.4,0.6]],
-  "description": "A detected region located toward the upper-left portion of the image and occupies a small area.",
-  "evidence": {"type":"coordinate_geometry","coordinates": [[0.1,0.2],[0.4,0.6]]}
-}
-```
-
-**No semantic hallucination:** coordinates alone → `A detected region is located...` ; only when detector provides `label: building` + bbox → `One building was detected in the upper-left portion...` (labels from evidence, e.g., YOLO `car 0.92`). For `Five vehicles: Two are located toward upper-left, two near center, and one toward lower-right`.
-
----
-
 ## Tech Stack
 
 | Layer | Technologies | Notes |
@@ -198,12 +160,10 @@ Evidence preserved:
 flowchart TD
     A[User Input<br/>NL Query + AOI Polygon or 1-2 Images<br/>Find Sentinel-2 2026-06-01 2026-06-30 &lt;20% cloud<br/>or Describe land cover] --> B[Frontend<br/>React 3-zone + Gradio Blocks<br/>ImageryViewer + SatelliteSearchPanel<br/>frontend/src/App.tsx / app.py]
 
-    B --> C[Ingestion + Unified SatelliteAsset<br/>JPG/PNG/TIFF/GeoTIFF/JP2 validation<br/>rasterio metadata without full-raster load<br/>Live STAC → SatelliteAsset<br/>backend/ingestion + backend/core/assets.py]
+    B --> C[Controller<br/>validate_inputs rasterio PIL<br/>classify_task + parse_retrieval_params<br/>backend/controller/__init__.py:282]
+    C --> D{Task Routing}
 
-    C --> D[Controller<br/>validate_inputs rasterio PIL<br/>classify_task + parse_retrieval_params<br/>backend/controller/__init__.py:282]
-    D --> E{Agentic Planner<br/>deterministic rule-based<br/>intent, specialists, pair/bands/live needs<br/>backend/agents/planner.py}
-
-    E -->|Find Sentinel-2 / imagery &lt;X% cloud / best image| R1[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>RetrievalRequest validation<br/>sensor product geometry dates cloud]
+    D -->|Find Sentinel-2 / imagery &lt;X% cloud / best image| R1[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>RetrievalRequest validation<br/>sensor product geometry dates cloud]
     R1 --> R2{Cache TTL 300s<br/>backend/satellite/cache.py}
     R2 -->|hit| R4[Ranked Scenes]
     R2 -->|miss| R3[CDSE STAC Client<br/>pystac-client → HTTP fallback<br/>sentinel-2-l2a intersects AOI<br/>datetime interval eo:cloud_cover<br/>backend/satellite/client.py]
@@ -214,11 +174,11 @@ flowchart TD
     R4 --> Sel[Best Scene + Ranked List<br/>selection_score coverage cloud<br/>API POST /api/satellite/search<br/>backend/api/satellite.py]
     Sel --> Pic[Frontend Select for Analysis<br/>stores SatelliteScene<br/>assets hrefs for NDVI etc<br/>ready for VQA/change/count]
 
-    E -->|single describe/caption| V1[VQA / Captioning<br/>Qwen2-VL-2B phase2-vrsbench]
-    E -->|single how many count| V2[Counting YOLOv8n<br/>yolov8n.pt]
-    E -->|single where locate| V3[Grounding<br/>maps to vqa]
-    E -->|bi-temporal| CH[Change Detection<br/>Qwen2-VL-2B cdvqa_change<br/>T1 T2 pair]
-    E -->|optical-sar| FU[Fusion<br/>phase2-vrsbench optical+SAR]
+    D -->|single describe/caption| V1[VQA / Captioning<br/>Qwen2-VL-2B phase2-vrsbench]
+    D -->|single how many count| V2[Counting YOLOv8n<br/>yolov8n.pt]
+    D -->|single where locate| V3[Grounding<br/>maps to vqa]
+    D -->|bi-temporal| CH[Change Detection<br/>Qwen2-VL-2B cdvqa_change<br/>T1 T2 pair]
+    D -->|optical-sar| FU[Fusion<br/>phase2-vrsbench optical+SAR]
 
     Pic --> SP
     SP[Spectral-Index Agent<br/>backend/spectral/agent.py<br/>6 indices NDVI/NDWI/NDBI/NDMI/SAVI/BSI<br/>real B02 B03 B04 B08 B11] --> SP2[Band Resolver + Raster Processor<br/>CDSE assets only required bands<br/>clip AOI → 10m bilinear / SCL nearest<br/>backend/spectral/bands.py + processor.py]
@@ -235,18 +195,14 @@ flowchart TD
     SP --> REG
     REG2 --> REG
 
-    REG[Registry<br/>backend/registry.py<br/>predict images query task<br/>only importer of backend.models.*] --> EV[Evidence Extraction<br/>raw coordinates, bboxes, polygons<br/>type coordinate_geometry / bounding_box<br/>EvidenceRef + raw preserved]
-    EV --> SG[Spatial Description Generator<br/>deterministic, no LLM<br/>normalized/pixel/geographic/unknown<br/>upper-left/center/lower-right + extent<br/>backend/utils/spatial.py]
-    SG --> EF[Evidence Fusion<br/>fused_evidence + agreement full/partial/conflict<br/>no forced consensus]
-    EF --> AN[Natural-Language Answer<br/>human-readable spatial description<br/>+ Raw Evidence / Visualization preserved]
-    AN --> TR[ExecutionTrace + Provenance<br/>task models_used is_real confidence<br/>description_source coordinate_system<br/>backend/schemas + backend/provenance]
-    TR --> UI[Display<br/>ResultsPanel bullets ChartPanel Bar Pie<br/>ImageryViewer + Confidence + Trace<br/>React + Gradio queue<br/>Map spectral overlay + legend<br/>Evidence + Graph]
+    REG[Registry<br/>backend/registry.py<br/>predict images query task<br/>only importer of backend.models.*] --> EV[Evidence + Structured<br/>bullets 3-6 + chart measured<br/>backend/utils/chart.py / yolo boxes<br/>type image_ref bounding_box overlay]
+    EV --> TR[ExecutionTrace Graded<br/>task models_used is_real is_stub latency_ms<br/>confidence evidence_refs total_latency<br/>backend/schemas/__init__.py]
+    TR --> UI[Display<br/>ResultsPanel bullets ChartPanel Bar Pie<br/>ImageryViewer + Confidence + Trace<br/>React + Gradio queue<br/>Map spectral overlay + legend]
 
     style R1 fill:#0ea5e9,stroke:#0284c7,color:#fff
     style Rk fill:#22c55e,stroke:#16a34a,color:#fff
     style SP fill:#a78bfa,stroke:#7c3aed,color:#fff
     style SP4 fill:#f59e0b,stroke:#d97706,color:#fff
-    style SG fill:#f472b6,stroke:#db2777,color:#fff
     style REG fill:#1e293b,stroke:#334155,color:#e2e8f0
     style TR fill:#f59e0b,stroke:#d97706,color:#fff
 ```
@@ -404,7 +360,6 @@ All in `backend/spectral/registry.py:5` `INDEX_REGISTRY` (name, description, for
 * `Show moisture levels.` → **NDMI**
 * `Show bare soil.` → **BSI**
 * `Calculate NDVI for the selected satellite image.` + scene/AOI → spectral agent
-* `Are there water bodies in the selected scene?` + scene/AOI → **NDWI** (scene-aware reroute, water-body → NDWI)
 * `Compare NDVI between these two dates.` → future temporal (not yet, currently single-date)
 
 Routing: `backend/controller/__init__.py:312` `_is_spectral_query` → `spectral_index` task; `parse_spectral_params` extracts index; controller `handle` requires scene + AOI, else returns instructional trace with `Select a scene + draw AOI`.
@@ -485,48 +440,6 @@ Example `trace_steps` array + `provenance` (satellite, scene_id, acquisition, ba
 
 ### Dependencies
 `rasterio>=1.5` (`/tmp` + `affine`), `shapely`, `numpy`, `matplotlib` for preview, `Pillow` — added to `venv` (rasterio manylinux). Band cache `SATQUERY_BAND_CACHE_DIR=/tmp/satquery_bands`, output `SATQUERY_SPECTRAL_OUTPUT_DIR=/tmp/satquery_spectral`.
-
----
-
-## Selected-Satellite-Image Query Mode
-
-**Purpose:** Once a scene is retrieved and active ("Query This Image"), follow-up queries analyze that **actual** scene instead of requiring a manual upload — VQA/count get the scene's real RGB composite, and NL index queries reuse the spectral agent.
-
-* **Retrieve → Activate:** Retrieval returns ranked `SatelliteScene`s with raster `assets`. Clicking a footprint / `🛰️ Query This Image →` sets it as the active scene.
-* **Active Scene card** (`frontend/src/components/ActiveSceneContext.tsx`): shows the active scene with `[Query This Image →]` and `[Change Scene]`; clearing returns to plain upload mode.
-* **Unified `/api/query`:** accepts optional multipart `scene_json` + `aoi_json` form fields. With `scene_json`, `images` may be omitted; invalid JSON → `422`.
-* **Scene-aware routing** (`backend/controller/__init__.py:282` `_classify_scene_query`): explicit index + scene → `spectral_index` as before; quantitative cover/water/built-up phrases (e.g. `How much water is in the selected scene?`) without an explicit index also reroute to `spectral_index` (index auto-mapped, water-body → NDWI); `satellite_retrieval` is preserved; everything else resolves the scene image and runs VQA/count.
-* **Scene RGB resolver** (`backend/scene/raster.py` `resolve_scene_rgb`): downloads B04/B03/B02 via CDSE STAC, builds a true-color composite through the same `backend/spectral/processor.py` pipeline (AOI → `Intersection(Scene, AOI)` clip, 10 m) and returns the PIL image + `leaflet_bounds` + provenance trace. No AOI → falls back to the thumb asset.
-* **Scene answers carry re-analysis provenance:** `QueryResponse` gains optional `scene_context` (`{scene_id, collection, datetime, platform, cloud, aoi, analysis:{image_source, expression, bands, leaflet_bounds}}`) and `analysis` (map overlay payload, e.g. spectral `preview_b64`/`bounds`/`stats`). The input cycle is provable: query → which scene → which bands → source region.
-* **Map overlay:** spectral scene queries render the result as a Leaflet `ImageOverlay` with legend + pixel inspect, driven from `analysis`, identical to the direct `/api/analysis/spectral-index` path.
-* **Execution trace:** each scene query records task, model(s), `scene_context`, plus resolved-image evidence in the same `ExecutionTrace` → `evidence` shape.
-
-### API
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/api/query` | Multipart: `query`, `input_mode`, optional `images` (0 allowed iff `scene_json` given), optional `scene_json`, `aoi_json` → `QueryResponse` |
-
-`QueryResponse` (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type`, `scene_context?`, `analysis?`.
-
-### Flowchart
-
-```
-Natural Language ("How much water?") + active SatelliteScene + AOI
-  → Controller _classify_scene_query (scene-aware)
-     ├─ explicit index          → spectral_index (parse_spectral_params)
-     ├─ quantitative cover/
-     │    water/built phrase    → spectral_index (auto index map, NDWI for water)  [requires AOI]
-     ├─ "find more scenes"      → satellite_retrieval (preserved)
-     └─ VQA / count / describe  → resolve_scene_rgb → registry.predict([pil], query, vqa|count)
-               ↓
-        QueryResponse {answer, execution_trace, evidence,
-                       scene_context, analysis{preview_b64, bounds, stats}}
-```
-
-### Evidence / trace contract
-
-Mirrors `docs/execution_trace_schema.md`; the resolved-image provenance is attached as `image_ref` evidence (`scene_id + B04/B03/B02 @ 10 m + bounds`) and re-exposed via `scene_context.analysis` + `analysis` so the UI can re-render the overlay and the region analyzed.
 
 ---
 
@@ -687,7 +600,7 @@ open http://localhost:7860/health   # health
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` , `/api/health` | `HealthResponse` — `specialists` (`registry.health()`), `base_model`, `adapter_path`, `cuda_available`, `force_cpu`, `compute`, `device` |
-| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`), optional `scene_json`/`aoi_json` (selected-satellite-image mode) → `QueryResponse` |
+| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`) → `QueryResponse` |
 | `POST` | `/api/satellite/search` | JSON: `geometry` (GeoJSON), `start_date`, `end_date`, `max_cloud_cover?`, `sensor?`, `product?`, `max_results?`, `required_bands?` → `SatelliteSearchResponse` ranked |
 | `GET` | `/api/satellite/health` | — | CDSE provider health |
 | `POST` | `/api/analysis/spectral-index` | JSON: `index` (NDVI…BSI), `scene` (SatelliteScene), `aoi` (GeoJSON), `cloud_mask?`, `target_resolution?` → `{index, scene_id, raster_path, preview_b64, bounds, stats, provenance, trace_steps}` |
@@ -696,7 +609,7 @@ open http://localhost:7860/health   # health
 | `GET` | `/docs` | Swagger UI |
 | `GET` | `/` | Serves `frontend/dist/index.html` when built (Docker/Spaces), else `{"message": ...}` |
 
-`QueryResponse` shape (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`), `scene_context?`, `analysis?` (scene mode).
+`QueryResponse` shape (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`).
 
 ---
 
@@ -753,42 +666,33 @@ Same `Blocks` in `app.py:367` with `Refresh health` (`@spaces.GPU` on demand, no
 mvp/
 ├── app.py                          # Gradio + ZeroGPU (HF) — @spaces.GPU reuses backend/controller + spectral search
 ├── backend/
-│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist, mounts /api + /api/satellite + /api/analysis
+│   ├── main.py                     # FastAPI, lifespan is_real health, serves frontend/dist, mounts /api/satellite + /api/analysis
 │   ├── config.py                   # BASE_MODEL / ADAPTER_PATH / CHANGE/FUSION/YOLO/spectral knobs
 │   ├── registry.py                 # task → specialist (only importer, now 7 agents: VQA/YOLO/change/fusion/satellite/spectral)
 │   ├── controller/__init__.py      # validate_inputs, classify_task (satellite + spectral), handle → ExecutionTrace
-│   ├── core/assets.py              # 🆕 Unified SatelliteAsset (source_type upload/live, never hallucinates metadata, hash/provenance)
-│   ├── ingestion/                  # 🆕 Upload/raster/live ingestion: image.py (JPG/PNG/TIFF/JP2 validation), raster.py (rasterio metadata without full load), live.py (STAC → Asset)
-│   ├── agents/planner.py           # 🆕 Deterministic Agentic Planner (intent→specialists, pair/band/live needs, rule-based, LLM-extensible)
-│   ├── agents/specialists/         # 🆕 Specialist interface: base.py (can_handle/run/evidence), registry.py, vqa/spectral/change/counting wrappers
-│   ├── evidence/                   # 🆕 Evidence grounding: models.py (typed evidence), fusion.py (agreement/conflicts, no forced consensus)
-│   ├── provenance/                 # 🆕 Provenance: record.py (run_id, timestamp, assets, plan, specialists, evidence, graph)
-│   ├── session/                    # 🆕 Conversational state: in-memory session store (upload once, ask many)
-│   ├── api/analyze.py              # 🆕 Unified /api/analyze + /api/analysis/{run_id}[/trace|/provenance] (session-aware)
-│   ├── models/                     # VQA/YOLO/change/fusion/grounding (VQA/change/fusion now with PEFT key_mapping fix for language_model)
+│   ├── models/                     # VQA/YOLO/change/fusion/grounding (as before)
 │   ├── satellite/                  # Live CDSE STAC: client, models, coverage, ranking, cache, agent
-│   ├── spectral/                   # Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
-│   ├── scene/                      # Selected-Satellite-Image mode: raster.py (resolve B04/B03/B02 → RGB PIL + leaflet bounds)
+│   ├── spectral/                   # 🆕 Spectral-Index Agent: registry (6 indices), bands, processor (rasterio 10m bilinear), masking, calculator, stats, agent
 │   ├── schemas/__init__.py         # ExecutionTrace graded contract
 │   ├── api/
 │   │   ├── __init__.py             # /health + /query
 │   │   ├── satellite.py            # POST /api/satellite/search + /health + /assets
-│   │   └── spectral.py             # POST /api/analysis/spectral-index + /pixel + /indices
+│   │   └── spectral.py             # 🆕 POST /api/analysis/spectral-index + /pixel + /indices
 │   └── utils/chart.py              # heuristic chart (measured, not LLM)
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                 # 🗺️ GIS workspace: MapView + LayerControl + SceneCards + SpectralPanel (3-zone + map) + ActiveSceneContext
+│   │   ├── App.tsx                 # 🗺️ GIS workspace: MapView + LayerControl + SceneCards + SpectralPanel (3-zone + map)
 │   │   ├── api/                    # mockClient, satelliteClient, spectralClient
 │   │   ├── types/                  # api.ts, satellite.ts
 │   │   ├── utils/geojson.ts        # isValidGeoJSON, bounds, sceneToGeoJSON
-│   │   └── components/             # Header, ImageUploader, ImageryViewer, MapView (Leaflet), LayerControl, SceneCards, SceneMetadataPanel, SpectralPanel, SpectralLegend, ActiveSceneContext, ResultsPanel, ChartPanel, ...
+│   │   └── components/             # Header, ImageUploader, ImageryViewer, MapView (Leaflet), LayerControl, SceneCards, SceneMetadataPanel, SpectralPanel, SpectralLegend, ResultsPanel, ChartPanel, ...
 │   ├── vite.config.ts              # proxy /api → 8000
 │   └── package.json                # React 18 + Vite 6 + leaflet/react-leaflet/leaflet-draw
 ├── training/
 │   ├── notebooks/                  # satquery_ai_qlora_finetune.ipynb + vrsbench_rsvqa_sft.ipynb + cdvqa_change_sft.ipynb
 │   └── configs/                    # bigearthnet_stage1.json, vrsbench_rsvqa_stage2.json, cdvqa_stage3.json
 ├── data/loaders/                   # dataset-specific loaders
-├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py, test_scene_query.py, test_agentic.py (SatelliteAsset/planner/spectral RGB->NDVI/evidence/provenance)
+├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_satellite_retrieval.py, test_gis_interactive.py, test_spectral.py
 ├── docs/
 │   ├── execution_trace_schema.md
 │   ├── hf_spaces.md
@@ -799,52 +703,6 @@ mvp/
 ├── requirements.txt                # inference + gradio + torchvision + ultralytics + rasterio + pystac-client + shapely
 └── assets/banner3.png
 ```
-
----
-
-## Agentic Earth-Observation System (New)
-
-**Vision:** *An agentic Earth-observation reasoning system that transforms satellite imagery into evidence-grounded answers using specialized EO models and traceable analysis workflows.*
-
-```
-USER
- ├─ Uploaded imagery ─┐
- └─ Live satellite retrieval (CDSE STAC) ─┤
-                    Image/Asset Ingestion (backend/ingestion)
-                              ↓
-                    Unified SatelliteAsset (backend/core/assets.py)
-                              ↓
-                    Agentic Planner (backend/agents/planner.py) — deterministic/rule-based, LLM-extensible
-                              ↓
-        ┌─────────────┬──────────────┬──────────────┐
-        VQA         Spectral       Change        Counting
-     (Qwen2-VL)   (NDVI..BSI)   Detection        (YOLO)
-        └─────────────┴──────────────┴──────────────┘
-                              ↓
-                    Evidence Extraction (backend/evidence)
-                              ↓
-                    Evidence Fusion (agreement/partial/conflict, no forced consensus)
-                              ↓
-                    Provenance (backend/provenance — run_id, timestamp, assets, plan, specialists, evidence, graph)
-                              ↓
-                    Grounded Answer + Evidence + Visualization + ExecutionTrace
-```
-
-**Unified SatelliteAsset** (`backend/core/assets.py`): every input becomes `SatelliteAsset{source_type, filename, format, width/height/channels, bands/band_names, sensor/platform, acquisition_time, crs/resolution/geotransform, cloud_cover/bbox, metadata/provenance, asset_id}`. JPG/PNG uploads populate image properties and mark satellite metadata unknown/null — never hallucinated. GeoTIFF/JP2 extracts raster metadata via `rasterio` without full-array load.
-
-**Ingestion** (`backend/ingestion/`): `image.py` validates ext/MIME/dim/channels/size/corrupt handling (CPU); `raster.py` windowed `MemoryFile` metadata; `live.py` wraps CDSE `SatelliteScene → SatelliteAsset`. Both upload and live enter the same `SatelliteAsset` pipeline.
-
-**Planner** (`backend/agents/planner.py`): deterministic `plan_query(query, assets) → Plan{intent, requires_pair/bands/live, steps[task_id,specialist,action,dependencies,parameters], limitations}`. Examples: `What type of land cover? → VQA→evidence→answer`; `How much vegetation? → inspect bands → spectral if NIR else VQA fallback with "NIR unavailable"`; `What changed? → validate_pair→change→VQA verify→fusion`; `Did urbanization increase and vegetation decrease? → NDBI+NDVI/change+fusion`. No LLM dependency.
-
-**Specialists** (`backend/agents/specialists/`): `base.py` interface `{name, capabilities, can_handle(), run()→SpecialistResult{status, answer, evidence, confidence, limitations, metrics, artifacts}}`; wrappers preserve existing `backend/models/vqa.py` (with `key_mapping` fix `model.layers.→model.language_model.layers.`), `spectral` (only calculates when required bands present, else `status: unsupported, reason: NIR unavailable`), `change` (validates pair, register/align, mask, stats, VQA verify), `counting` (YOLO boxes). Registry delegates via `backend/registry.py`.
-
-**Evidence** (`backend/evidence/`): every specialist emits typed evidence `{image_region, bounding_box, segmentation_mask, change_mask, derived_measurement, metadata, model_output, source_scene, execution_step}`. Fusion combines without forcing agreement; conflicts exposed as `agreement: full|partial|conflict`.
-
-**Provenance** (`backend/provenance/record.py`): each run captures `run_id, timestamp, input_type, asset_id/filename/hash, query, plan, specialists, model names/versions, parameters, derived measurements, evidence, artifacts, answer, limitations/errors` plus graph `INPUT→INGESTION→PLANNER→SPECIALISTS→EVIDENCE→FUSION→ANSWER`. Stored in-memory and via `/api/analysis/{run_id}/provenance`.
-
-**Session** (`backend/session/store.py`): in-memory per-session asset persistence (TTL 4h, 1000 sessions) — upload once, ask multiple questions; pair retained for bi-temporal.
-
-**Hugging Face Space:** `app.py` (Gradio `zero-a10g`, `@spaces.GPU`) is unchanged — remains backup/demo deployment, still serves `ExecutionTrace` alongside new `/api/analyze` FastAPI endpoints. No Gradio→React replacement, no port change, no Azure/GPU requirement.
 
 ---
 

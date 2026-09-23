@@ -71,35 +71,10 @@ def _parse_stac_item(item: dict[str, Any]) -> SatelliteScene | None:
         assets_raw = item.get("assets") or {}
         assets: dict[str, str] = {}
         for k, v in assets_raw.items():
-            href: str | None = None
-            if isinstance(v, dict):
-                # Prefer HTTPS alternate if the primary href is s3:// (CDSE often provides both)
-                # Structure: {"href": "s3://...", "alternate": {"https": {"href": "https://..."}, "s3": {...}}}
-                raw_href = v.get("href")
-                # Check alternate for https
-                alt = v.get("alternate")
-                if isinstance(alt, dict):
-                    for alt_key in ("https", "HTTPS", "http"):
-                        alt_entry = alt.get(alt_key)
-                        if isinstance(alt_entry, dict) and alt_entry.get("href"):
-                            alt_href = str(alt_entry["href"])
-                            if alt_href.startswith("https://"):
-                                href = alt_href
-                                break
-                    # Fallback: any alternate with https href
-                    if not href:
-                        for alt_val in alt.values():
-                            if isinstance(alt_val, dict) and isinstance(alt_val.get("href"), str) and alt_val["href"].startswith("https://"):
-                                href = str(alt_val["href"])
-                                break
-                if not href and isinstance(raw_href, str):
-                    href = str(raw_href)
-                # If href is still s3:// and alternate had https, prefer https (already handled)
-                # Otherwise keep s3 href — processor will try https conversion / rasterio fallback
+            if isinstance(v, dict) and "href" in v:
+                assets[k] = str(v["href"])
             elif isinstance(v, str):
-                href = v
-            if href:
-                assets[k] = href
+                assets[k] = v
         thumb = _extract_thumbnail(assets_raw)
 
         # metadata passthrough useful fields

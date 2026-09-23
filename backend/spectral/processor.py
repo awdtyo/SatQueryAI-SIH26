@@ -37,108 +37,39 @@ except ImportError:
     Resampling = None  # type: ignore
 
 
-def _s3_to_https_candidates(href: str) -> list[str]:
-    """CDSE STAC often returns s3://eodata/... — try common HTTPS mirrors."""
-    if not href.startswith("s3://"):
-        return []
-    path = href[5:]  # strip s3://
-    # e.g. eodata/Sentinel-2/.../B04.jp2
-    candidates: list[str] = []
-    # Primary EODATA HTTPS gateway (public, used by CDSE alternate)
-    candidates.append(f"https://eodata.dataspace.copernicus.eu/{path}")
-    # Variant with /eodata prefix already included — dedup
-    if path.startswith("eodata/"):
-        candidates.append(f"https://eodata.dataspace.copernicus.eu/{path}")
-    else:
-        candidates.append(f"https://eodata.dataspace.copernicus.eu/eodata/{path}")
-    # Zipper gateway sometimes mirrors same
-    candidates.append(f"https://zipper.dataspace.copernicus.eu/{path}")
-    # Deduplicate preserving order
-    seen: set[str] = set()
-    uniq: list[str] = []
-    for c in candidates:
-        if c not in seen:
-            seen.add(c)
-            uniq.append(c)
-    return uniq
-
-
 def _download_band(href: str, scene_id: str, band: str) -> Path:
-    """Download band asset to cache, return local path. Handles s3:// via HTTPS conversion or rasterio fallback."""
+    """Download band asset to cache, return local path. Streaming, handles redirects."""
     safe_scene = "".join(c if c.isalnum() else "_" for c in scene_id)[:80]
     band_dir = _BAND_CACHE_DIR / safe_scene
     band_dir.mkdir(parents=True, exist_ok=True)
     # Determine filename from href
     fname = href.split("?")[0].split("/")[-1] or f"{band}.jp2"
+    # Ensure extension
     if "." not in fname:
         fname = f"{band}.jp2"
     local_path = band_dir / f"{band}_{fname}"
     if local_path.exists() and local_path.stat().st_size > 1024:
         logger.info("Band cache hit: %s -> %s", band, local_path)
         return local_path
-
-    # Build candidate hrefs: original + https mirrors for s3
-    candidates = [href]
-    if href.startswith("s3://"):
-        https_candidates = _s3_to_https_candidates(href)
-        logger.info("Band %s href is s3:// — will try HTTPS mirrors: %s", band, https_candidates[:2])
-        candidates = https_candidates + [href]
-
-    last_err: Exception | None = None
-    for cand in candidates:
-        is_s3 = cand.startswith("s3://")
-        try:
-            if is_s3:
-                # Try rasterio /vsis3/ read-then-write (requires GDAL S3 creds; may fail without creds)
-                # Fall back to GDAL vsis3 streaming if requests can't handle s3://
-                logger.info("Attempting S3 band %s via rasterio /vsis3/: %s", band, cand[:120])
-                try:
-                    import rasterio  # type: ignore
-                    from rasterio.io import MemoryFile  # type: ignore
-
-                    # Configure GDAL to allow unsigned S3 reads where possible
-                    # CDSE S3 is requester-pays and needs creds; without creds this will 403,
-                    # but we try anyway — next candidate (https) will be attempted by outer loop
-                    vsis3_path = f"/vsis3/{cand[5:]}"
-                    with rasterio.Env(AWS_NO_SIGN_REQUEST="YES", GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR"):  # type: ignore
-                        with rasterio.open(vsis3_path) as src:
-                            profile = src.profile.copy()
-                            data = src.read(1)
-                            with rasterio.open(local_path, "w", **profile) as dst:
-                                dst.write(data, 1)
-                    if local_path.exists() and local_path.stat().st_size > 1024:
-                        logger.info("Band %s via /vsis3/ succeeded", band)
-                        return local_path
-                except Exception as e_s3:
-                    last_err = e_s3
-                    logger.warning("Band %s /vsis3/ failed: %s", band, e_s3)
-                    continue
-                # If vsis3 failed, fall through to try next https candidate (already in list)
-                continue
-
-            logger.info("Downloading band %s from %s", band, cand[:120])
-            with requests.get(cand, stream=True, timeout=90) as r:
-                r.raise_for_status()
-                with open(local_path, "wb") as f:
-                    for chunk in r.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-            if local_path.exists() and local_path.stat().st_size > 1024:
-                if cand != href:
-                    logger.info("Band %s downloaded via HTTPS mirror %s", band, cand[:80])
-                return local_path
-        except Exception as e:
-            last_err = e
-            logger.warning("Band %s download from %s failed: %s", band, cand[:80], e)
-            if local_path.exists():
-                try:
-                    local_path.unlink()
-                except Exception:
-                    pass
-            continue
-
-    # All candidates exhausted
-    raise RuntimeError(f"Failed to download band {band} from {href}: {last_err}. CDSE S3 assets require HTTPS alternate or S3 credentials. Try another scene with HTTPS assets or use the preview thumbnail.") from last_err
+    logger.info("Downloading band %s from %s", band, href[:120])
+    # Stream download
+    try:
+        with requests.get(href, stream=True, timeout=90) as r:
+            r.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+    except Exception as e:
+        if local_path.exists():
+            try:
+                local_path.unlink()
+            except Exception:
+                pass
+        raise RuntimeError(f"Failed to download band {band} from {href}: {e}") from e
+    if not local_path.exists() or local_path.stat().st_size < 1024:
+        raise RuntimeError(f"Downloaded band {band} is empty or too small: {local_path}")
+    return local_path
 
 
 def _get_aoi_bounds_4326(aoi: dict[str, Any]) -> tuple[float, float, float, float]:

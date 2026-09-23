@@ -1,10 +1,8 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import type { SatelliteScene } from "../types/satellite";
 
 interface Props {
   onSubmit: (query: string) => void;
   disabled: boolean;
-  activeScene?: SatelliteScene | null;
 }
 
 const SUGGESTIONS = [
@@ -16,21 +14,10 @@ const SUGGESTIONS = [
   "Compare vegetation indices between T1 and T2",
 ];
 
-const ACTIVE_SCENE_SUGGESTIONS = [
-  "Describe the land cover of the selected scene",
-  "How much vegetation is present?",
-  "Are there any water bodies in the selected scene?",
-  "How many buildings are in the selected scene?",
-  "Calculate NDVI for the selected scene",
-  "What land cover classes are visible?",
-];
-
-export default function QueryInput({ onSubmit, disabled, activeScene }: Props) {
+export default function QueryInput({ onSubmit, disabled }: Props) {
   const [value, setValue] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-  const suggestions = activeScene ? ACTIVE_SCENE_SUGGESTIONS : SUGGESTIONS;
 
   const handleSubmit = useCallback(() => {
     const trimmed = value.trim();
@@ -58,35 +45,15 @@ export default function QueryInput({ onSubmit, disabled, activeScene }: Props) {
     }
   }, [value]);
 
-  const placeholder = activeScene
-    ? `Ask about the selected scene (${activeScene.id.slice(0, 18)}…)…`
-    : "Ask about the satellite imagery...";
-
   return (
     <div className="relative flex items-end gap-4">
       {/* Prompt indicator + label */}
       <div className="flex flex-col items-end gap-0.5 flex-shrink-0 pb-1">
         <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em] hidden sm:block">
-          {activeScene ? "Scene Query" : "Analysis Query"}
+          Analysis Query
         </span>
         <span className="text-accent/60 font-mono text-base leading-none">&gt;</span>
       </div>
-
-      {activeScene && (
-        <div className="flex-shrink-0 pb-1 max-w-[220px]">
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-full border border-accent/40 bg-accent/10 text-[10px] text-accent truncate">
-            <span>🛰️</span>
-            <span className="truncate font-mono" title={activeScene.id}>
-              {activeScene.id.slice(0, 16)}…
-            </span>
-            {activeScene.datetime && (
-              <span className="text-ink-muted">
-                {new Date(activeScene.datetime).toLocaleDateString()}
-              </span>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Text input */}
       <div className="flex-1 relative">
@@ -107,7 +74,7 @@ export default function QueryInput({ onSubmit, disabled, activeScene }: Props) {
           }}
           onKeyDown={handleKeyDown}
           disabled={disabled}
-          placeholder={placeholder}
+          placeholder="Ask about the satellite imagery..."
           rows={1}
           className={`
             w-full bg-surface-900/60 border border-surface-400/40 text-ink
@@ -121,7 +88,7 @@ export default function QueryInput({ onSubmit, disabled, activeScene }: Props) {
         {/* Suggestions */}
         {showSuggestions && !disabled && (
           <div className="absolute bottom-full left-0 right-0 mb-2 flex flex-wrap gap-1.5">
-            {suggestions.map((s) => (
+            {SUGGESTIONS.map((s) => (
               <button
                 key={s}
                 onMouseDown={(e) => {
@@ -156,7 +123,7 @@ export default function QueryInput({ onSubmit, disabled, activeScene }: Props) {
           }
         `}
       >
-        {activeScene ? "Analyze Scene" : "Execute Analysis"}
+        Execute Analysis
       </button>
 
       {/* Keyboard hint */}
