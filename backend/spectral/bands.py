@@ -30,14 +30,34 @@ def resolve_band_assets(scene_assets: dict[str, Any], required_bands: list[str])
     - Validates all required bands exist
     - Raises ValueError with clear message if missing
     """
-    # Normalize scene assets to upper keys
+    # Normalize scene assets to upper keys — CDSE provides s3:// href with https alternate
     norm = {k.upper(): v for k, v in scene_assets.items()}
-    # Also handle href dicts vs strings
+
+    def _best_href_from_dict(d: dict[str, Any]) -> str | None:
+        # Prefer https alternate over s3 primary href when available
+        raw = d.get("href")
+        alt = d.get("alternate")
+        if isinstance(alt, dict):
+            for key in ("https", "HTTPS", "http"):
+                entry = alt.get(key)
+                if isinstance(entry, dict) and isinstance(entry.get("href"), str) and entry["href"].startswith("https://"):
+                    return str(entry["href"])
+            for val in alt.values():
+                if isinstance(val, dict) and isinstance(val.get("href"), str) and val["href"].startswith("https://"):
+                    return str(val["href"])
+        if isinstance(raw, str):
+            return str(raw)
+        return None
+
     def get_href(val: Any) -> str | None:
         if isinstance(val, str):
             return val
-        if isinstance(val, dict) and "href" in val:
-            return str(val["href"])
+        if isinstance(val, dict):
+            best = _best_href_from_dict(val)
+            if best:
+                return best
+            if "href" in val and isinstance(val["href"], str):
+                return str(val["href"])
         return None
 
     resolved: dict[str, str] = {}

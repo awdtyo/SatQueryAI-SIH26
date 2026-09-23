@@ -915,7 +915,17 @@ def _handle_active_scene(
     try:
         resolved = resolve_scene_rgb(scene, aoi=aoi)
     except Exception as e:
-        # Indistinct/no-AOI/preview-missing — return traced instructional response.
+        err_str = str(e)
+        # Distinguish missing AOI vs. band download failure (s3://) for actionable message
+        has_aoi = bool(aoi and isinstance(aoi, dict) and aoi.get("type"))
+        if "No AOI drawn" in err_str or "no preview/thumbnail" in err_str.lower():
+            hint = "Draw an AOI polygon on the map for the active scene to analyze its real band data."
+        elif "s3://" in err_str or "No connection adapters" in err_str or "Failed to download band" in err_str:
+            hint = "This scene's band assets are stored as s3:// (CDSE) without an HTTPS alternate and could not be downloaded from this environment. Try another scene from the search results, or use the preview thumbnail — VQA/count will still work on thumbnail when bands are unavailable. For spectral indices (NDVI etc.), select a scene that exposes https:// assets."
+        elif not has_aoi:
+            hint = "Draw an AOI polygon on the map for the active scene to analyze its real band data."
+        else:
+            hint = "Try a different scene or redraw the AOI (smaller area) and retry. If the issue persists, the scene's assets may be temporarily unavailable from CDSE."
         logger.warning("Active scene resolution failed for %s: %s", _scene_ctx(scene)["scene_id"], e)
         total_latency = int((time.time() - t0) * 1000)
         trace = ExecutionTrace(
@@ -924,7 +934,7 @@ def _handle_active_scene(
                 ModelTraceEntry(
                     name="Active Scene Resolver",
                     role="scene_asset_resolution",
-                    parameters={"error": str(e)},
+                    parameters={"error": err_str},
                     latency_ms=int((time.time() - resolve_start) * 1000),
                     is_real=True,
                     is_stub=False,
@@ -936,7 +946,7 @@ def _handle_active_scene(
             total_latency_ms=total_latency,
         )
         return QueryResponse(
-            answer=f"{e}\n\nDraw an AOI polygon on the map for the active scene to analyze its real band data.",
+            answer=f"{e}\n\n{hint}",
             confidence=0.3,
             execution_trace=trace,
             evidence=[],
@@ -944,7 +954,7 @@ def _handle_active_scene(
             chart=None,
             chart_type=None,
             scene_context=_scene_ctx(scene, aoi=aoi),
-            analysis={"type": "active_scene_error", "error": str(e)},
+            analysis={"type": "active_scene_error", "error": err_str},
         )
 
     pil_image = resolved["image"]

@@ -157,30 +157,53 @@ def resolve_scene_rgb(
 
     from backend.spectral.processor import process_bands
 
-    proc = process_bands(
-        scene_assets=scene_assets,
-        required_bands=RGB_BANDS,
-        scene_id=scene_obj.id,
-        aoi=aoi,
-        target_resolution=10,
-        cloud_mask=False,
-    )
-    trace.append(
-        "Bands retrieved: B04/B03/B02 @ 10 m, clipped to AOI (Intersection(Scene, AOI))"
-    )
-    img = _arr_to_rgb_image(proc["bands"])
-    img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-    trace.append(
-        f"True-color composite composed ({img.size[0]}x{img.size[1]}) from real asset bands"
-    )
-    return {
-        "image": img,
-        "source": "bands",
-        "scene_id": scene_obj.id,
-        "collection": scene_obj.collection,
-        "bands": RGB_BANDS,
-        "leaflet_bounds": _leaflet_bounds_from_profile(proc.get("profile") or {}),
-        "profile": proc.get("profile"),
-        "trace_steps": trace,
-        "latency_ms": int((time.time() - start) * 1000),
-    }
+    try:
+        proc = process_bands(
+            scene_assets=scene_assets,
+            required_bands=RGB_BANDS,
+            scene_id=scene_obj.id,
+            aoi=aoi,
+            target_resolution=10,
+            cloud_mask=False,
+        )
+        trace.append(
+            "Bands retrieved: B04/B03/B02 @ 10 m, clipped to AOI (Intersection(Scene, AOI))"
+        )
+        img = _arr_to_rgb_image(proc["bands"])
+        img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        trace.append(
+            f"True-color composite composed ({img.size[0]}x{img.size[1]}) from real asset bands"
+        )
+        return {
+            "image": img,
+            "source": "bands",
+            "scene_id": scene_obj.id,
+            "collection": scene_obj.collection,
+            "bands": RGB_BANDS,
+            "leaflet_bounds": _leaflet_bounds_from_profile(proc.get("profile") or {}),
+            "profile": proc.get("profile"),
+            "trace_steps": trace,
+            "latency_ms": int((time.time() - start) * 1000),
+        }
+    except Exception as e:
+        err_msg = str(e)
+        # CDSE s3:// assets without HTTPS alternate are common — gracefully fall back to thumbnail
+        # so VQA/count still works instead of hard failing with confusing "Draw an AOI" message.
+        if "s3://" in err_msg or "No connection adapters" in err_msg or "Failed to download band" in err_msg:
+            logger.warning("Band download failed for %s (%s) — falling back to thumbnail: %s", scene_obj.id, RGB_BANDS, e)
+            trace.append(f"Band download failed ({err_msg[:120]}) — using real scene preview/thumbnail asset instead")
+            thumb, thumb_trace = _load_thumbnail(scene_obj)
+            trace.extend(thumb_trace)
+            trace.append("Fallback: VQA/count can still run on thumbnail; for spectral indices try another scene or smaller AOI")
+            return {
+                "image": thumb,
+                "source": "thumbnail",
+                "scene_id": scene_obj.id,
+                "collection": scene_obj.collection,
+                "bands": [],
+                "leaflet_bounds": _leaflet_bounds_from_bbox(getattr(scene_obj, "bbox", None)),
+                "profile": None,
+                "trace_steps": trace,
+                "latency_ms": int((time.time() - start) * 1000),
+            }
+        raise
