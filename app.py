@@ -355,6 +355,29 @@ def _pick_scene_by_id(scenes_json: Any, scene_id: str) -> Any:
     return None
 
 
+def _format_active_scene_banner(scene: Any) -> str:
+    """Banner shown above Query box — mirrors frontend ActiveSceneContext."""
+    if not scene or not isinstance(scene, dict) or not scene.get("id"):
+        return (
+            "🔎 **No active satellite image** — run **Live Satellite Search**, pick a scene, "
+            "then **Select for Analysis** to make its real Sentinel-2 assets the query context. "
+            "Or upload an image above."
+        )
+    sid = scene.get("id", "unknown")
+    plat = scene.get("platform") or scene.get("collection", "sentinel-2-l2a")
+    dt = str(scene.get("datetime", "—"))[:10]
+    cloud = scene.get("cloud_cover")
+    cloud_str = f"{cloud:.1f}%" if isinstance(cloud, (int, float)) else "—"
+    cov = scene.get("coverage")
+    cov_str = f"{cov:.1f}%" if isinstance(cov, (int, float)) else "—"
+    return (
+        f"🛰️ **Active Satellite Image** — next query analyzes **this** scene's real assets  \n"
+        f"`{sid}` · **{plat}** · **{dt}** · cloud **{cloud_str}** · coverage **{cov_str}**  \n"
+        f"> Your next question (Describe / How many / Calculate NDVI…) will be answered using this scene. "
+        f"Click another footprint or **Clear** to change."
+    )
+
+
 def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[no-untyped-def]
     """Identical to frontend ChartPanel — bar/pie toggle, question-aware (count vs distribution)."""
     # chart_state may be list (legacy) or dict {"data": [...], "type": "count"}
@@ -417,12 +440,14 @@ def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[n
         return None
 
 
-@spaces.GPU(duration=60)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
+@spaces.GPU(duration=60)  # ZeroGPU: 60s fits free quota (band fetch is cached / thumbnail fallback keeps within budget)
 def predict(
     query: str,
     input_mode: str,
     image_a: Any,
     image_b: Any | None = None,
+    active_scene: Any | None = None,
+    aoi_text: str | None = None,
     progress: Any = None,
 ) -> tuple[str, float, dict[str, Any], str, dict[str, Any]]:
     """Gradio handler — decorated for ZeroGPU scheduling.
@@ -446,12 +471,103 @@ def predict(
     if mode not in app_config.SUPPORTED_INPUT_MODES:
         return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "none"}
 
-    # Collect images per mode
+    # ── Selected Satellite Image Query Mode (same as React App.tsx runSceneQuery) ──
+    # If a live scene is active and no upload is provided, the query is answered
+    # from the scene's REAL assets (B04/B03/B02 → PIL or B04/B08 etc → spectral).
+    # This is the HF Spaces equivalent of POST /api/query scene_json+aoi_json.
+    scene_dict: dict[str, Any] | None = None
+    aoi_dict: dict[str, Any] | None = None
+    has_active_scene = isinstance(active_scene, dict) and bool(active_scene.get("id"))
+    if has_active_scene:
+        # Normalize aoi_text (GeoJSON string from the search AOI box) → dict
+        if aoi_text and isinstance(aoi_text, str) and aoi_text.strip():
+            try:
+                aoi_dict = json.loads(aoi_text)
+                if not isinstance(aoi_dict, dict):
+                    aoi_dict = None
+            except Exception:
+                aoi_dict = None
+        scene_dict = active_scene  # type: ignore[assignment]
+        # If the user also uploaded images, uploaded images win (explicit override);
+        # otherwise the active scene is the grounding source per spec §2.
+        if image_a is None and image_b is None:
+            # No uploads — delegate as scene query (controller will resolve real bands)
+            try:
+                resp = controller_handle(
+                    query=query.strip(),
+                    images=[],
+                    input_mode="single",
+                    scene=scene_dict,
+                    aoi=aoi_dict,
+                )
+            except Exception as e:
+                import traceback as _tb
+                try:
+                    from fastapi import HTTPException as _HTTPException
+
+                    if isinstance(e, _HTTPException):
+                        return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "none"}
+                except Exception:
+                    pass
+                logger.exception("Scene controller failed: %s", e)
+                return f"Scene analysis failed: {e}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000]}, f"Error: {e}", {"data": [], "type": "none"}
+            # Fall through to shared rendering below — reuse same evidence/trace/chart logic
+            # by jumping to a common post-processing block via local helper
+            # (build evidence_md/trace_dict/chart_state from resp)
+            # We inline the same post-processing as the upload path to avoid duplication
+            evidence_md_parts: list[str] = []  # type: ignore[no-redef]
+            for ev in resp.evidence:
+                icon = {"bounding_box": "▢", "overlay": "◈", "heatmap": "▣", "saliency": "◎", "image_ref": "▣"}.get(ev.type, "•")
+                line = f"{icon} **{ev.type.replace('_', ' ').upper()}** — {ev.description}"
+                if ev.coordinates:
+                    line += f" `coords={ev.coordinates}`"
+                # Surface scene provenance in evidence
+                evidence_md_parts.append(line)
+            # Provenance line
+            try:
+                sc = getattr(resp, "scene_context", None) or {}
+                an = getattr(resp, "analysis", None) or {}
+                if sc:
+                    evidence_md_parts.append(
+                        f"🛰️ **Source:** `{sc.get('scene_id','—')}` · {sc.get('collection','—')} · {str(sc.get('datetime','—'))[:16]} · cloud {sc.get('cloud_cover','—')}% · AOI {'yes' if sc.get('aoi') else 'scene footprint'} · analysis `{an.get('type','—') if isinstance(an, dict) else '—'}`"
+                    )
+            except Exception:
+                pass
+            evidence_md_scene = "\n\n".join(evidence_md_parts) if evidence_md_parts else "No evidence."
+            try:
+                trace_dict_scene = resp.execution_trace.model_dump()
+            except Exception:
+                trace_dict_scene = resp.execution_trace.dict()  # type: ignore
+            trace_dict_scene["_gradio_wall_ms"] = int((time.time() - started) * 1000)
+            trace_dict_scene["_active_scene_id"] = scene_dict.get("id")
+            logger.info("Gradio scene predict: task=%s conf=%.3f scene=%s", trace_dict_scene.get("task"), float(resp.confidence), scene_dict.get("id"))
+            chart_data_scene: list[dict[str, Any]] = []
+            chart_type_scene = "distribution"
+            try:
+                if getattr(resp, "chart", None):
+                    chart_data_scene = [{"label": c.label, "value": float(c.value)} for c in resp.chart]  # type: ignore
+                elif getattr(resp, "structured", None) and resp.structured and resp.structured.chart:  # type: ignore
+                    chart_data_scene = [{"label": c.label, "value": float(c.value)} for c in resp.structured.chart]  # type: ignore
+                ct2 = getattr(resp, "chart_type", None)
+                if ct2:
+                    chart_type_scene = str(ct2)
+                elif getattr(resp, "structured", None) and resp.structured and getattr(resp.structured, "chart_type", None):  # type: ignore
+                    chart_type_scene = str(resp.structured.chart_type)  # type: ignore
+                else:
+                    chart_type_scene = "count" if trace_dict_scene.get("task") == "count" else "distribution"
+            except Exception:
+                pass
+            return resp.answer, float(resp.confidence), trace_dict_scene, evidence_md_scene, {"data": chart_data_scene, "type": chart_type_scene}
+
+    # Collect images per mode (uploaded-image path — unchanged)
     images: list[Any] = []
     try:
         if mode == "single":
             if image_a is None:
-                return "Upload one image for single mode.", 0.0, {}, "", {"data": [], "type": "none"}
+                # No upload and no active scene → instructional (same phrasing as React)
+                if has_active_scene:
+                    return "No image uploaded — but an active scene is selected. Your query will be analyzed against the active scene's real assets. If this was unexpected, upload an image or click **Clear** on the active scene banner.", 0.0, {}, "", {"data": [], "type": "none"}
+                return "Upload one image for single mode — or run **Live Satellite Search** and **Select for Analysis** to query a live Sentinel-2 scene without uploading.", 0.0, {}, "", {"data": [], "type": "none"}
             images.append(_coerce_gradio_image(image_a, "image.png"))
         elif mode in ("optical-sar", "bi-temporal"):
             if image_a is None or image_b is None:
@@ -591,10 +707,12 @@ with gr.Blocks(
 
             input_mode.change(fn=_toggle_second, inputs=[input_mode], outputs=[image_b])
 
+            active_scene_banner = gr.Markdown(value=_format_active_scene_banner(None))
+
             gr.Markdown("### Query")
             query = gr.Textbox(
                 label="Natural-language query",
-                placeholder="Describe the land cover in this satellite image.",
+                placeholder="Describe the land cover in this satellite image — or select a live scene above to query it without uploading.",
                 lines=3,
             )
             gr.Examples(
@@ -748,19 +866,28 @@ with gr.Blocks(
 
     def _on_select_for_analysis(selected_state: Any):
         md = _format_selected_scene(selected_state)
-        # Also surface in main evidence area as quick hint
-        return md
+        banner = _format_active_scene_banner(selected_state)
+        # Dynamic placeholder so user knows their next query will use the active scene
+        placeholder = f"Ask about the selected scene ({str(selected_state.get('id',''))[:18]}…)…" if isinstance(selected_state, dict) and selected_state.get("id") else "Describe the land cover in this satellite image — or select a live scene above to query it without uploading."
+        return md, banner, gr.update(placeholder=placeholder)
 
-    sat_select_btn.click(fn=_on_select_for_analysis, inputs=[sat_selected_state], outputs=[sat_selected_md])
+    sat_select_btn.click(fn=_on_select_for_analysis, inputs=[sat_selected_state], outputs=[sat_selected_md, active_scene_banner, query])
+
+    # Keep banner in sync when picker changes without explicit Select click
+    def _on_picker_banner(scene_id: str, scenes_state: Any):
+        picked = _pick_scene_by_id(scenes_state, scene_id)
+        return _format_active_scene_banner(picked), gr.update(placeholder=f"Ask about the selected scene ({str(picked.get('id',''))[:18]}…)…" if picked else "Describe the land cover in this satellite image — or select a live scene above to query it without uploading.")
+
+    sat_scene_picker.change(fn=_on_picker_banner, inputs=[sat_scene_picker, sat_scenes_state], outputs=[active_scene_banner, query])
 
     refresh_health.click(fn=_health_gpu, outputs=[health])
     # Initial health load — prefilled, no GPU quota cost
     demo.load(fn=_health_placeholder, outputs=[health])
 
-    # Wire predict — queue required for @spaces.GPU; show status updates; identical bullets+charts
+    # Wire predict — now also passes active scene + AOI (HF Spaces = React runSceneQuery equivalent)
     run_btn.click(
         fn=predict,
-        inputs=[query, input_mode, image_a, image_b],
+        inputs=[query, input_mode, image_a, image_b, sat_selected_state, sat_geometry],
         outputs=[answer, confidence, trace, evidence, chart_state],
         show_progress=True,
     ).then(fn=_update_chart, inputs=[chart_state, chart_type], outputs=[chart_plot])
@@ -796,6 +923,8 @@ with gr.Blocks(
             gr.update(visible=False),
             "*No scene selected — run a search first.*",
             [],
+            _format_active_scene_banner(None),
+            gr.update(placeholder="Describe the land cover in this satellite image — or select a live scene above to query it without uploading."),
         )
 
     clear_btn.click(
@@ -821,6 +950,8 @@ with gr.Blocks(
             sat_select_btn,
             sat_selected_md,
             sat_scenes_state,
+            active_scene_banner,
+            query,
         ],
     )
 
