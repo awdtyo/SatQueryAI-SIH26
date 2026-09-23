@@ -137,6 +137,44 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 
 ---
 
+### Natural-Language Spatial Interpretation
+
+SatQuery preserves raw coordinates/visualizations while automatically converting spatial outputs into human-readable descriptions via `backend/utils/spatial.py` (deterministic, no LLM).
+
+**Flow:** `Raw Model Output → Evidence Extraction → Spatial Description Generator → Evidence Fusion → Natural-Language Answer + Raw Evidence/Graph`
+
+- Coordinates stay in `evidence.coordinates` and `spatial_provenance.input_coordinates` for visualization/debugging.
+- `description` becomes user-facing interpretation; `spatial_provenance` records `description_source: derived_from_coordinates`, `coordinate_system`, `image_dimensions`.
+
+**Coordinate-system aware:**
+- **Normalized** `0≤x≤1` → image-relative `upper-left/center/lower-right` (+ extent if bbox)
+- **Pixel** `x=125,y=340` → normalized via `image_dimensions` → same image-relative language
+- **Geographic** `lat/lon` → `centered near the provided geographic coordinates` (never mis-described as image position)
+- **Unknown** → `coordinate regions were detected, but their coordinate reference system is not available`
+
+**Example:**
+```text
+Raw output:
+[0.1, 0.2, 0.4, 0.6]
+
+Natural-language interpretation:
+A detected region occupies the upper-left to central portion of the image and occupies a small area near the upper-center.
+
+Graph raw [0.0 0.5,0 1.0] etc:
+Three spatial regions were identified in the image. Their positions are distributed across different portions of the scene, including areas toward the upper-left, central, and lower portions of the image.
+
+Evidence preserved:
+{
+  "coordinates": [[0.1,0.2],[0.4,0.6]],
+  "description": "A detected region located toward the upper-left portion of the image and occupies a small area.",
+  "evidence": {"type":"coordinate_geometry","coordinates": [[0.1,0.2],[0.4,0.6]]}
+}
+```
+
+**No semantic hallucination:** coordinates alone → `A detected region is located...` ; only when detector provides `label: building` + bbox → `One building was detected in the upper-left portion...` (labels from evidence, e.g., YOLO `car 0.92`). For `Five vehicles: Two are located toward upper-left, two near center, and one toward lower-right`.
+
+---
+
 ## Tech Stack
 
 | Layer | Technologies | Notes |
@@ -160,10 +198,12 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 flowchart TD
     A[User Input<br/>NL Query + AOI Polygon or 1-2 Images<br/>Find Sentinel-2 2026-06-01 2026-06-30 &lt;20% cloud<br/>or Describe land cover] --> B[Frontend<br/>React 3-zone + Gradio Blocks<br/>ImageryViewer + SatelliteSearchPanel<br/>frontend/src/App.tsx / app.py]
 
-    B --> C[Controller<br/>validate_inputs rasterio PIL<br/>classify_task + parse_retrieval_params<br/>backend/controller/__init__.py:282]
-    C --> D{Task Routing}
+    B --> C[Ingestion + Unified SatelliteAsset<br/>JPG/PNG/TIFF/GeoTIFF/JP2 validation<br/>rasterio metadata without full-raster load<br/>Live STAC → SatelliteAsset<br/>backend/ingestion + backend/core/assets.py]
 
-    D -->|Find Sentinel-2 / imagery &lt;X% cloud / best image| R1[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>RetrievalRequest validation<br/>sensor product geometry dates cloud]
+    C --> D[Controller<br/>validate_inputs rasterio PIL<br/>classify_task + parse_retrieval_params<br/>backend/controller/__init__.py:282]
+    D --> E{Agentic Planner<br/>deterministic rule-based<br/>intent, specialists, pair/bands/live needs<br/>backend/agents/planner.py}
+
+    E -->|Find Sentinel-2 / imagery &lt;X% cloud / best image| R1[Satellite Retrieval Agent<br/>backend/satellite/agent.py<br/>RetrievalRequest validation<br/>sensor product geometry dates cloud]
     R1 --> R2{Cache TTL 300s<br/>backend/satellite/cache.py}
     R2 -->|hit| R4[Ranked Scenes]
     R2 -->|miss| R3[CDSE STAC Client<br/>pystac-client → HTTP fallback<br/>sentinel-2-l2a intersects AOI<br/>datetime interval eo:cloud_cover<br/>backend/satellite/client.py]
@@ -174,11 +214,11 @@ flowchart TD
     R4 --> Sel[Best Scene + Ranked List<br/>selection_score coverage cloud<br/>API POST /api/satellite/search<br/>backend/api/satellite.py]
     Sel --> Pic[Frontend Select for Analysis<br/>stores SatelliteScene<br/>assets hrefs for NDVI etc<br/>ready for VQA/change/count]
 
-    D -->|single describe/caption| V1[VQA / Captioning<br/>Qwen2-VL-2B phase2-vrsbench]
-    D -->|single how many count| V2[Counting YOLOv8n<br/>yolov8n.pt]
-    D -->|single where locate| V3[Grounding<br/>maps to vqa]
-    D -->|bi-temporal| CH[Change Detection<br/>Qwen2-VL-2B cdvqa_change<br/>T1 T2 pair]
-    D -->|optical-sar| FU[Fusion<br/>phase2-vrsbench optical+SAR]
+    E -->|single describe/caption| V1[VQA / Captioning<br/>Qwen2-VL-2B phase2-vrsbench]
+    E -->|single how many count| V2[Counting YOLOv8n<br/>yolov8n.pt]
+    E -->|single where locate| V3[Grounding<br/>maps to vqa]
+    E -->|bi-temporal| CH[Change Detection<br/>Qwen2-VL-2B cdvqa_change<br/>T1 T2 pair]
+    E -->|optical-sar| FU[Fusion<br/>phase2-vrsbench optical+SAR]
 
     Pic --> SP
     SP[Spectral-Index Agent<br/>backend/spectral/agent.py<br/>6 indices NDVI/NDWI/NDBI/NDMI/SAVI/BSI<br/>real B02 B03 B04 B08 B11] --> SP2[Band Resolver + Raster Processor<br/>CDSE assets only required bands<br/>clip AOI → 10m bilinear / SCL nearest<br/>backend/spectral/bands.py + processor.py]
@@ -195,14 +235,18 @@ flowchart TD
     SP --> REG
     REG2 --> REG
 
-    REG[Registry<br/>backend/registry.py<br/>predict images query task<br/>only importer of backend.models.*] --> EV[Evidence + Structured<br/>bullets 3-6 + chart measured<br/>backend/utils/chart.py / yolo boxes<br/>type image_ref bounding_box overlay]
-    EV --> TR[ExecutionTrace Graded<br/>task models_used is_real is_stub latency_ms<br/>confidence evidence_refs total_latency<br/>backend/schemas/__init__.py]
-    TR --> UI[Display<br/>ResultsPanel bullets ChartPanel Bar Pie<br/>ImageryViewer + Confidence + Trace<br/>React + Gradio queue<br/>Map spectral overlay + legend]
+    REG[Registry<br/>backend/registry.py<br/>predict images query task<br/>only importer of backend.models.*] --> EV[Evidence Extraction<br/>raw coordinates, bboxes, polygons<br/>type coordinate_geometry / bounding_box<br/>EvidenceRef + raw preserved]
+    EV --> SG[Spatial Description Generator<br/>deterministic, no LLM<br/>normalized/pixel/geographic/unknown<br/>upper-left/center/lower-right + extent<br/>backend/utils/spatial.py]
+    SG --> EF[Evidence Fusion<br/>fused_evidence + agreement full/partial/conflict<br/>no forced consensus]
+    EF --> AN[Natural-Language Answer<br/>human-readable spatial description<br/>+ Raw Evidence / Visualization preserved]
+    AN --> TR[ExecutionTrace + Provenance<br/>task models_used is_real confidence<br/>description_source coordinate_system<br/>backend/schemas + backend/provenance]
+    TR --> UI[Display<br/>ResultsPanel bullets ChartPanel Bar Pie<br/>ImageryViewer + Confidence + Trace<br/>React + Gradio queue<br/>Map spectral overlay + legend<br/>Evidence + Graph]
 
     style R1 fill:#0ea5e9,stroke:#0284c7,color:#fff
     style Rk fill:#22c55e,stroke:#16a34a,color:#fff
     style SP fill:#a78bfa,stroke:#7c3aed,color:#fff
     style SP4 fill:#f59e0b,stroke:#d97706,color:#fff
+    style SG fill:#f472b6,stroke:#db2777,color:#fff
     style REG fill:#1e293b,stroke:#334155,color:#e2e8f0
     style TR fill:#f59e0b,stroke:#d97706,color:#fff
 ```

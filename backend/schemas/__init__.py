@@ -17,12 +17,37 @@ from pydantic import BaseModel, Field
 # --- Evidence ---
 
 class EvidenceRef(BaseModel):
-    type: Literal["bounding_box", "overlay", "heatmap", "saliency", "image_ref"] = Field(
+    model_config = {"extra": "allow"}  # allow provenance fields like spatial_description without breaking
+
+    type: Literal[
+        "bounding_box",
+        "overlay",
+        "heatmap",
+        "saliency",
+        "image_ref",
+        "coordinate_geometry",
+        "image_region",
+        "segmentation_mask",
+        "change_mask",
+        "derived_measurement",
+        "metadata",
+        "model_output",
+        "source_scene",
+        "execution_step",
+    ] = Field(
         description="Evidence modality"
     )
     description: str
     coordinates: list[list[float]] | None = None
     image_index: int | None = 0
+    # Spatial interpretation provenance — additive, preserves raw coordinates
+    spatial_description: str | None = Field(default=None, description="Natural-language interpretation of coordinates")
+    spatial_provenance: dict[str, Any] | None = Field(default=None, description="Provenance for spatial description")
+    bbox: list[float] | None = None
+    metric: str | None = None
+    value: float | None = None
+    source: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 # --- Execution trace ---

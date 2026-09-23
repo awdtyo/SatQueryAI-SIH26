@@ -436,6 +436,184 @@ def _scene_ctx(scene: dict[str, Any] | Any, aoi: dict[str, Any] | None = None, s
     return out
 
 
+def _enrich_with_spatial_descriptions(
+    result: dict[str, Any],
+    pil_images: list[Any] | None = None,
+    query: str | None = None,
+) -> dict[str, Any]:
+    """Deterministic spatial description — enrich evidence/answer, preserve raw coordinates.
+
+    Uses backend.utils.spatial.describe_spatial_output lazily. Never hallucinates semantics.
+    Appends natural-language interpretation to answer if raw coordinates would otherwise be primary.
+    """
+    try:
+        from backend.utils.spatial import describe_spatial_output, describe_graph_output  # lazy, CPU-safe
+
+        evidence = result.get("evidence", []) or []
+        answer = str(result.get("answer", "") or "")
+        # Image dimensions for pixel→normalized conversion
+        img_dims: tuple[int, int] | None = None
+        try:
+            if pil_images and len(pil_images) > 0 and hasattr(pil_images[0], "size"):
+                w, h = pil_images[0].size  # type: ignore
+                img_dims = (int(w), int(h))
+        except Exception:
+            img_dims = None
+
+        # Gather coordinate-bearing evidence
+        coord_evs: list[dict[str, Any]] = []
+        all_coords: list[Any] = []
+        labels: list[str] | None = None
+        label_candidates: list[str] = []
+        for ev in evidence:
+            if isinstance(ev, dict) and ev.get("coordinates"):
+                coord_evs.append(ev)
+                all_coords.append(ev["coordinates"])
+                # Try to extract label from description without hallucinating
+                desc = str(ev.get("description", "") or "")
+                # If description already contains a semantic label from detector (e.g., "building 0.92"), keep first token if not stub
+                first = desc.strip().split()[0].lower() if desc.strip() else ""
+                if first and first not in ("[stub]",) and len(first) < 20:
+                    label_candidates.append(first)
+        # Also consider result-level coordinates/graph data
+        graph_coords = result.get("coordinates") or result.get("graph") or result.get("graph_data")
+        if graph_coords and not coord_evs:
+            # Treat graph_data as spatial output
+            try:
+                spatial = describe_graph_output(graph_coords, image_dimensions=img_dims)
+                result["spatial_description"] = spatial["description"]
+                result["spatial_provenance"] = {
+                    "description_source": "derived_from_coordinates",
+                    "coordinate_system": spatial["coordinate_system"],
+                    "input_coordinates": spatial["input_coordinates"],
+                    "image_dimensions": list(img_dims) if img_dims else None,
+                }
+                # Enrich answer if raw
+                raw_like = ("[" in answer and any(c.isdigit() for c in answer) and len(answer.strip()) < 300 and answer.count("[") >= 1)
+                wants_raw = query and "raw" in query.lower() and "coordinate" in query.lower()
+                if (raw_like or not answer.strip() or answer.strip().startswith("[")) and not wants_raw:
+                    # Prepend natural description, keep raw in evidence
+                    evidence.append(
+                        {
+                            "type": "coordinate_geometry",
+                            "description": spatial["description"],
+                            "coordinates": spatial["input_coordinates"] if isinstance(spatial["input_coordinates"], list) else [spatial["input_coordinates"]],
+                            "spatial_description": spatial["description"],
+                            "spatial_provenance": result["spatial_provenance"],
+                        }
+                    )
+                    result["evidence"] = evidence
+                    result["answer"] = spatial["description"] + "\n\nEvidence:\n" + answer[:500]
+                return result
+            except Exception:
+                pass
+
+        if not coord_evs:
+            # Check if answer itself looks like raw coordinates (e.g., "[0.0 0.5, 0 1.0]")
+            raw_like = False
+            try:
+                # Heuristic: many numbers with brackets/commas and little natural language
+                import re
+
+                nums = re.findall(r"[-+]?\d*\.?\d+", answer)
+                has_brackets = "[" in answer and "]" in answer
+                words = len(answer.split())
+                if has_brackets and len(nums) >= 4 and words < 20:
+                    raw_like = True
+                elif coords := graph_coords:
+                    raw_like = True
+            except Exception:
+                pass
+            if raw_like and all_coords is None:
+                # Still try to describe answer's coordinates
+                try:
+                    spatial = describe_graph_output(answer, image_dimensions=img_dims)
+                    result["spatial_description"] = spatial["description"]
+                    result["spatial_provenance"] = {
+                        "description_source": "derived_from_coordinates",
+                        "coordinate_system": spatial["coordinate_system"],
+                        "input_coordinates": spatial["input_coordinates"],
+                        "image_dimensions": list(img_dims) if img_dims else None,
+                    }
+                    wants_raw = query and "raw" in query.lower() and "coordinate" in query.lower()
+                    if not wants_raw:
+                        result["answer"] = spatial["description"] + "\n\nRaw coordinates preserved in evidence."
+                        result["evidence"] = [
+                            {
+                                "type": "coordinate_geometry",
+                                "description": spatial["description"],
+                                "coordinates": spatial["input_coordinates"] if isinstance(spatial["input_coordinates"], list) else [],
+                                "spatial_description": spatial["description"],
+                                "spatial_provenance": result["spatial_provenance"],
+                            }
+                        ]
+                except Exception:
+                    pass
+            return result
+
+        # Decide labels: only if we have consistent label_candidates from evidence, use them
+        use_labels: list[str] | None = None
+        if label_candidates and len(label_candidates) == len(coord_evs) and len(set(label_candidates)) <= 2:
+            # Only use if not generic stub terms
+            if not any("stub" in lc for lc in label_candidates):
+                use_labels = label_candidates
+
+        # Geographic hint: if any evidence has geographic metadata or query mentions lat/lon, mark geographic
+        coord_system: str = "auto"  # type: ignore
+        if query and any(k in query.lower() for k in ["latitude", "longitude", "lat ", "lon ", "geographic", "gps"]):
+            coord_system = "geographic"  # type: ignore
+
+        # Batch describe all regions together for coherent count/positions
+        try:
+            # For batch, pass list of coordinates
+            # If all_coords are bboxes as [[x1,y1],[x2,y2]], we keep as is
+            spatial = describe_spatial_output(all_coords, coordinate_system=coord_system, image_dimensions=img_dims, labels=use_labels)  # type: ignore
+        except Exception as e:
+            logger.debug("Spatial describe batch failed: %s", e)
+            return result
+
+        # Enrich each evidence with spatial provenance, preserving raw
+        for ev in coord_evs:
+            if "spatial_description" not in ev:
+                ev["spatial_description"] = spatial["description"]
+                ev["spatial_provenance"] = {
+                    "description_source": "derived_from_coordinates",
+                    "coordinate_system": spatial["coordinate_system"],
+                    "input_coordinates": ev.get("coordinates"),
+                    "image_dimensions": list(img_dims) if img_dims else None,
+                }
+                # Update description to be natural-language interpretation (primary user-facing) but keep hint of original
+                # Do not overwrite if description already contains spatial language and looks good
+                if len(ev.get("description", "")) < 80 or "[STUB]" in ev.get("description", ""):
+                    ev["description"] = spatial["description"].split(".")[0] + "." if "." in spatial["description"] else spatial["description"]
+
+        # Enrich answer if it is raw-like or lacks spatial context and we have spatial evidence
+        wants_raw = query and ("raw" in query.lower() and "coordinate" in query.lower())
+        if not wants_raw:
+            # Check if answer already contains spatial language (e.g., upper-left)
+            has_spatial_lang = any(k in answer.lower() for k in ["upper", "lower", "center", "left", "right", "portion of the image", "detected region"])
+            if not has_spatial_lang:
+                # Append spatial description as leading natural answer, preserving original answer after
+                # Avoid duplicating if answer is already long natural text
+                if len(answer.strip()) < 30 or ("[" in answer and "]" in answer):
+                    result["answer"] = spatial["description"] + ("\n\n" + answer if answer.strip() else "")
+                else:
+                    # Prepend spatial interpretation
+                    result["answer"] = spatial["description"] + "\n\n" + answer
+
+        result["spatial_description"] = spatial["description"]
+        result["spatial_provenance"] = {
+            "description_source": "derived_from_coordinates",
+            "coordinate_system": spatial["coordinate_system"],
+            "input_coordinates": spatial["input_coordinates"],
+            "image_dimensions": list(img_dims) if img_dims else None,
+        }
+        result["evidence"] = evidence
+    except Exception as e:
+        logger.debug("Spatial enrichment skipped: %s", e)
+    return result
+
+
 def _build_structured(result: dict[str, Any], task: str) -> tuple[Any, list[Any] | None, str | None]:
     """Extract StructuredOutput/ChartEntry from a specialist result (shared by all paths)."""
     from backend.schemas import ChartEntry, StructuredOutput
@@ -575,6 +753,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             result = {"answer": f"Satellite retrieval failed: {e}", "evidence": [], "confidence": 0.0, "_latency_ms": int((time.time() - invoke_start) * 1000), "_error": str(e)}
             is_stub = True
 
+        result = _enrich_with_spatial_descriptions(result, pil_images=None, query=query)
         latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
         answer = str(result.get("answer", ""))
         confidence = float(result.get("confidence", 0.5))
@@ -700,6 +879,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             logger.error("Spectral agent failed: %s", e, exc_info=True)
             result = {"answer": f"Spectral processing failed for {index}: {e}", "evidence": [], "confidence": 0.0, "_latency_ms": int((time.time() - invoke_start) * 1000), "_error": str(e)}
             is_stub = True
+        result = _enrich_with_spatial_descriptions(result, pil_images=None, query=query)
         latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
         answer = str(result.get("answer", ""))
         confidence = float(result.get("confidence", 0.5))
@@ -797,6 +977,9 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             "_error": str(e),
         }
         is_stub = True
+
+    # Spatial description enrichment — preserve raw coordinates, add natural-language interpretation
+    result = _enrich_with_spatial_descriptions(result, pil_images=pil_images, query=query)
 
     latency_ms = int((time.time() - invoke_start) * 1000)
     answer = str(result.get("answer", ""))
@@ -987,6 +1170,7 @@ def _handle_active_scene(
         }
         is_stub = True
 
+    result = _enrich_with_spatial_descriptions(result, pil_images=[pil_image], query=query)
     latency_ms = int(result.get("_latency_ms", int((time.time() - invoke_start) * 1000)))
     answer = str(result.get("answer", ""))
     confidence = float(result.get("confidence", 0.5))

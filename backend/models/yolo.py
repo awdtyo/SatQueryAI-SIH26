@@ -289,20 +289,56 @@ def predict(
     else:
         bullets.append(f"Try lowering confidence (current {app_config.YOLO_CONF}) or check image resolution (10m Sentinel-2 small objects may be <10px)")
 
-    # Add quadrant note if evidence available (simple bbox centroid)
+    # Natural-language spatial description — deterministic, no hallucination
     if evidence:
-        # Estimate dominant quadrant
         try:
-            xs = [c[0][0] for c in [e["coordinates"] for e in evidence if e.get("coordinates")]]
-            ys = [c[0][1] for c in [e["coordinates"] for e in evidence if e.get("coordinates")]]
-            if xs and ys:
-                cx = sum(xs) / len(xs)
-                cy = sum(ys) / len(ys)
-                w, h = image.size
-                quad = ("north" if cy < h / 2 else "south") + ("west" if cx < w / 2 else "east")
-                bullets.append(f"Locations centered **{quad}** quadrant (10m resolution, YOLO {getattr(_yolo, 'ckpt_path', app_config.YOLO_WEIGHTS)})")
+            from backend.utils.spatial import describe_spatial_output
+
+            # Collect bboxes as pixel coordinates [[x1,y1],[x2,y2]] -> normalized via image dimensions
+            bboxes = [e["coordinates"] for e in evidence if e.get("coordinates")]
+            labels_for_spatial = None
+            # Only use labels if they are real detections (not stub)
+            if bboxes:
+                # Extract labels from description (first token before space)
+                try:
+                    lbls = [e.get("description", "").split()[0].lower() for e in evidence if e.get("coordinates")]
+                    # Filter out empty or generic
+                    if all(lbls):
+                        labels_for_spatial = lbls
+                except Exception:
+                    labels_for_spatial = None
+                w_img, h_img = image.size
+                spatial = describe_spatial_output(
+                    bboxes,
+                    coordinate_system="pixel",
+                    image_dimensions=(w_img, h_img),
+                    labels=labels_for_spatial,
+                )
+                # Append natural-language bullet (user-facing) — raw coordinates preserved in evidence
+                bullets.append(spatial["description"])
+                # Enrich each evidence with description provenance (preserve raw)
+                for ev in evidence:
+                    ev["description"] = f"{ev.get('description','')} — {spatial['description'].split('.')[0] if '.' in spatial['description'] else spatial['description']}"
+                    ev["spatial_description"] = spatial["description"]
+                    ev["spatial_provenance"] = {
+                        "description_source": "derived_from_coordinates",
+                        "coordinate_system": spatial["coordinate_system"],
+                        "input_coordinates": ev.get("coordinates"),
+                        "image_dimensions": [w_img, h_img],
+                    }
         except Exception:
-            pass
+            # Fallback to simple quadrant
+            try:
+                xs = [c[0][0] for c in [e["coordinates"] for e in evidence if e.get("coordinates")]]
+                ys = [c[0][1] for c in [e["coordinates"] for e in evidence if e.get("coordinates")]]
+                if xs and ys:
+                    cx = sum(xs) / len(xs)
+                    cy = sum(ys) / len(ys)
+                    w, h = image.size
+                    quad = ("north" if cy < h / 2 else "south") + ("west" if cx < w / 2 else "east")
+                    bullets.append(f"Locations centered **{quad}** quadrant (10m resolution, YOLO {getattr(_yolo, 'ckpt_path', app_config.YOLO_WEIGHTS)})")
+            except Exception:
+                pass
 
     answer = "\n".join(f"- {b}" for b in bullets)
 
