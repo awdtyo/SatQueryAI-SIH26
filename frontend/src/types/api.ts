@@ -45,12 +45,20 @@ export interface EvidenceRef {
   image_index?: number;
 }
 
+/** A land-cover class share, used for the donut breakdown chart */
+export interface LandCoverSlice {
+  label: string;
+  value: number;
+}
+
 /** Full query response from the backend */
 export interface QueryResponse {
   answer: string;
   confidence: number;
   execution_trace: ExecutionTrace;
   evidence: EvidenceRef[];
+  /** Optional land-cover distribution returned with the answer. */
+  land_cover?: LandCoverSlice[];
 }
 
 /** Application error shape */

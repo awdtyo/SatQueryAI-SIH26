@@ -14,7 +14,7 @@ const SUGGESTIONS = [
   "Compare vegetation indices between T1 and T2",
 ];
 
-export default function QueryInput({ onSubmit, disabled }: Props) {
+export default function QueryBar({ onSubmit, disabled }: Props) {
   const [value, setValue] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -45,18 +45,11 @@ export default function QueryInput({ onSubmit, disabled }: Props) {
     }
   }, [value]);
 
-  return (
-    <div className="relative flex items-end gap-4">
-      {/* Prompt indicator + label */}
-      <div className="flex flex-col items-end gap-0.5 flex-shrink-0 pb-1">
-        <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em] hidden sm:block">
-          Analysis Query
-        </span>
-        <span className="text-accent/60 font-mono text-base leading-none">&gt;</span>
-      </div>
+  const canExecute = value.trim().length > 0 && !disabled;
 
-      {/* Text input */}
-      <div className="flex-1 relative">
+  return (
+    <div className="relative flex items-center gap-3">
+      <div className="relative flex-1">
         <textarea
           ref={textareaRef}
           value={value}
@@ -76,31 +69,21 @@ export default function QueryInput({ onSubmit, disabled }: Props) {
           disabled={disabled}
           placeholder="Ask about the satellite imagery..."
           rows={1}
-          className={`
-            w-full bg-surface-900/60 border border-surface-400/40 text-ink
-            placeholder-ink-muted/60 px-4 py-2.5 text-[15px] font-sans
-            resize-none focus:outline-none rounded-lg
-            focus:border-accent/50 transition-colors duration-150
-            disabled:opacity-50 disabled:cursor-not-allowed
-          `}
+          className="w-full resize-none rounded-lg border border-slate-800 bg-slate-950 px-4 py-2.5 text-[14px] text-slate-200 placeholder:text-slate-500 transition-colors focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 disabled:cursor-not-allowed disabled:opacity-50"
         />
 
-        {/* Suggestions */}
         {showSuggestions && !disabled && (
           <div className="absolute bottom-full left-0 right-0 mb-2 flex flex-wrap gap-1.5">
             {SUGGESTIONS.map((s) => (
               <button
                 key={s}
+                type="button"
                 onMouseDown={(e) => {
                   e.preventDefault();
                   setValue(s);
                   setShowSuggestions(false);
                 }}
-                className="
-                  text-[11px] px-2.5 py-1.5 border border-surface-400/30
-                  bg-surface-800 text-ink-secondary hover:border-accent/30 hover:text-ink
-                  transition-colors rounded
-                "
+                className="rounded border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-[11px] text-slate-300 transition-colors hover:border-teal-500/40 hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/60"
               >
                 {s}
               </button>
@@ -109,31 +92,31 @@ export default function QueryInput({ onSubmit, disabled }: Props) {
         )}
       </div>
 
-      {/* Execute button */}
       <button
+        type="button"
         onClick={handleSubmit}
-        disabled={!value.trim() || disabled}
-        className={`
-          flex-shrink-0 px-5 py-2.5 text-[12px] font-semibold tracking-wide uppercase
-          rounded-lg border transition-all duration-150
-          ${
-            value.trim() && !disabled
-              ? "border-accent bg-accent text-surface-950 hover:bg-accent/90"
-              : "border-surface-400/30 bg-surface-700/40 text-ink-muted/50 cursor-not-allowed"
-          }
-        `}
+        disabled={!canExecute}
+        aria-label={disabled ? "Analysis in progress" : "Execute analysis"}
+        className={`flex flex-shrink-0 items-center gap-2 rounded-lg px-5 py-2.5 text-[11px] font-semibold uppercase tracking-wider transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/60 ${
+          canExecute
+            ? "bg-teal-500 text-slate-950 hover:bg-teal-400"
+            : "cursor-not-allowed bg-slate-800 text-slate-500"
+        }`}
       >
-        Execute Analysis
+        {disabled && (
+          <span
+            className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-950/30 border-t-slate-950"
+            aria-hidden="true"
+          />
+        )}
+        {disabled ? "Analyzing" : "Execute Analysis"}
       </button>
 
-      {/* Keyboard hint */}
-      <div className="hidden xl:flex items-center gap-1.5 flex-shrink-0 pb-2">
-        <span className="text-[10px] text-ink-muted">
-          <kbd className="px-1.5 py-px border border-surface-400/30 bg-surface-700 text-ink-secondary rounded">
-            Enter
-          </kbd>{" "}
-          execute
-        </span>
+      <div className="hidden flex-shrink-0 items-center gap-1.5 xl:flex">
+        <kbd className="rounded border border-slate-700 bg-slate-800 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
+          Enter
+        </kbd>
+        <span className="text-[10px] text-slate-500">to execute</span>
       </div>
     </div>
   );

@@ -71,6 +71,14 @@ const MOCK_RESPONSE: QueryResponse = {
       image_index: 1,
     },
   ],
+  land_cover: [
+    { label: "urban", value: 4.3 },
+    { label: "water", value: 5.8 },
+    { label: "vegetation", value: 18.2 },
+    { label: "cropland", value: 12.6 },
+    { label: "bare", value: 9.1 },
+    { label: "other", value: 50.0 },
+  ],
 };
 
 // TODO: Swap for real POST /api/query when backend is ready
