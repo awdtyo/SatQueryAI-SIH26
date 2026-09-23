@@ -219,15 +219,113 @@ def classify_task(query: str, input_mode: str) -> str:
     return "vqa"
 
 
+# --- Location resolution (search by place name) ---
+
+def _resolve_location_to_images(
+    images: list[Any],
+    input_mode: str,
+    location_query: str | None = None,
+    coordinates: dict | None = None,
+    location_query_2: str | None = None,
+    coordinates_2: dict | None = None,
+) -> tuple[list[Any], list[dict]]:
+    """If images are missing but location is provided, fetch via Nominatim + Planetary Computer.
+
+    Returns (image_payloads, imagery_metas). If images already present, returns them unchanged.
+    Raises HTTPException on geocode/fetch failure.
+    """
+    if images:
+        return images, []
+
+    # Determine if location path was requested
+    has_loc1 = bool((location_query and location_query.strip()) or coordinates)
+    has_loc2 = bool((location_query_2 and location_query_2.strip()) or coordinates_2)
+
+    if not has_loc1 and not has_loc2:
+        return images, []
+
+    # Lazy imports to avoid circular deps and keep optional deps soft
+    from backend.services.geocode import geocode_place, parse_coordinates  # type: ignore
+    from backend.services.imagery_fetch import fetch_imagery_for_location  # type: ignore
+
+    locations: list[dict] = []
+
+    def _resolve_one(lq: str | None, coords: dict | None) -> dict | None:
+        if coords and isinstance(coords, dict) and "lat" in coords and "lon" in coords:
+            try:
+                lat = float(coords["lat"])
+                lon = float(coords["lon"])
+                if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                    raise ValueError("lat/lon out of range")
+                return {"lat": lat, "lon": lon, "display_name": f"{lat}, {lon}"}
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"Invalid coordinates {coords}: {e}") from e
+        if lq and lq.strip():
+            # Handle direct lat,lon string via geocode's parse_coordinates
+            parsed = parse_coordinates(lq)
+            if parsed:
+                return {"lat": parsed["lat"], "lon": parsed["lon"], "display_name": lq.strip()}
+            return geocode_place(lq.strip())
+        return None
+
+    loc1 = _resolve_one(location_query, coordinates)
+    if loc1:
+        locations.append(loc1)
+
+    loc2 = _resolve_one(location_query_2, coordinates_2)
+    if loc2:
+        locations.append(loc2)
+
+    if not locations:
+        raise HTTPException(status_code=422, detail="Location query provided but could not be resolved to coordinates")
+
+    # Validate mode vs locations count (fetch will handle bi-temporal single-location -> 2 dates)
+    # Don't error here; let fetch_imagery handle mode logic
+    payloads, metas = fetch_imagery_for_location(locations, input_mode=input_mode)
+    # Attach display names + lat/lon to metas for trace/preview (handle bi-temporal single-location -> 2 scenes)
+    for i, meta in enumerate(metas):
+        loc = locations[min(i, len(locations) - 1)] if locations else {}
+        meta["display_name"] = meta.get("display_name") or loc.get("display_name")
+        meta["lat"] = meta.get("lat") or loc.get("lat")
+        meta["lon"] = meta.get("lon") or loc.get("lon")
+
+    logger.info("Location resolution: %s -> %d images (mode=%s)", locations, len(payloads), input_mode)
+    return payloads, metas
+
+
 # --- Orchestration ---
 
-def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryResponse:
+def handle(
+    query: str,
+    images: list[Any],
+    input_mode: str = "single",
+    location_query: str | None = None,
+    coordinates: dict | None = None,
+    location_query_2: str | None = None,
+    coordinates_2: dict | None = None,
+) -> QueryResponse:
     """Main controller entrypoint — validates, classifies, routes, merges, traces.
 
     Called by API route handler. Never imports backend.models directly; goes via registry.
+    If location_query/coordinates is present and images is not, resolves to images via
+    geocode + Planetary Computer STAC, then falls through to existing pipeline unchanged.
     """
     t0 = time.time()
-    logger.info("Controller: query=%r mode=%s images=%d", (query or "")[:80], input_mode, len(images) if images else 0)
+    logger.info(
+        "Controller: query=%r mode=%s images=%d location_query=%r coordinates=%r",
+        (query or "")[:80],
+        input_mode,
+        len(images) if images else 0,
+        location_query,
+        coordinates,
+    )
+
+    # 0. Location resolution (alternative to upload)
+    imagery_metas: list[dict] = []
+    if (not images or len(images) == 0) and (location_query or coordinates or location_query_2 or coordinates_2):
+        images, imagery_metas = _resolve_location_to_images(
+            images, input_mode, location_query, coordinates, location_query_2, coordinates_2
+        )
 
     # 1. Validate
     pil_images = validate_inputs(images, input_mode)
@@ -287,6 +385,19 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
             # Be permissive — skip malformed evidence rather than failing the whole response
             logger.warning("Skipping malformed evidence: %r", ev)
 
+    loc_params: dict[str, Any] = {}
+    if imagery_metas:
+        loc_params["location_resolved"] = True
+        loc_params["location_metas"] = imagery_metas
+        if location_query:
+            loc_params["location_query"] = location_query
+        if coordinates:
+            loc_params["coordinates"] = coordinates
+        if location_query_2:
+            loc_params["location_query_2"] = location_query_2
+        if coordinates_2:
+            loc_params["coordinates_2"] = coordinates_2
+
     model_entry = ModelTraceEntry(
         name=model_label if isinstance(model_label, str) else specialist_name,
         role=task,
@@ -295,6 +406,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
             "image_count": len(pil_images),
             "adapter_path": config.ADAPTER_PATH,
             "base_model": config.BASE_MODEL,
+            **loc_params,
         },
         latency_ms=latency_ms,
         is_real=is_real and not bool(result.get("_stub", False)),
@@ -309,6 +421,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
             "image_count": len(pil_images),
             "band_subset": "RGB",  # placeholder — real pipeline would report actual bands
             "spatial_resolution_m": 10,
+            **loc_params,
         },
         confidence=confidence,
         evidence_refs=evidence_refs,
@@ -373,6 +486,40 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
     except Exception as e:
         logger.warning("Structured parse failed: %s", e)
 
+    # Build resolved image previews for location path (so frontend can show fetched imagery in viewer)
+    resolved_previews = None
+    if imagery_metas and pil_images:
+        try:
+            import base64
+
+            resolved_previews = []
+            for idx, pil in enumerate(pil_images):
+                try:
+                    # Thumb for preview payload (limit 512px to keep JSON <1MB)
+                    thumb = pil.copy()
+                    thumb.thumbnail((512, 512), Image.BILINEAR)
+                    buf = io.BytesIO()
+                    thumb.save(buf, format="PNG")
+                    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+                    data_url = f"data:image/png;base64,{b64}"
+                except Exception:
+                    data_url = None
+                meta = imagery_metas[idx] if idx < len(imagery_metas) else {}
+                resolved_previews.append(
+                    {
+                        "display_name": meta.get("display_name"),
+                        "lat": meta.get("lat"),
+                        "lon": meta.get("lon"),
+                        "scene_id": meta.get("scene_id"),
+                        "collection": meta.get("collection"),
+                        "preview_b64": data_url,
+                        "bbox": meta.get("bbox"),
+                    }
+                )
+        except Exception as e:
+            logger.debug("Failed to build resolved previews: %s", e)
+            resolved_previews = None
+
     return QueryResponse(
         answer=answer,
         confidence=confidence,
@@ -381,4 +528,5 @@ def handle(query: str, images: list[Any], input_mode: str = "single") -> QueryRe
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
+        resolved_images=resolved_previews,  # type: ignore
     )

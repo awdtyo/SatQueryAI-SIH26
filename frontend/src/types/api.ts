@@ -12,11 +12,16 @@ export interface UploadedImage {
   role?: "optical" | "sar" | "t1" | "t2";
 }
 
-/** Query request sent to the backend */
+/** Query request sent to the backend — images OR location (Nominatim + Planetary Computer) */
 export interface QueryRequest {
   query: string;
   input_mode: InputMode;
   images: File[];
+  // Alternative to images — resolved server-side via geocode + STAC
+  location_query?: string;
+  location_query_2?: string;
+  coordinates?: { lat: number; lon: number };
+  coordinates_2?: { lat: number; lon: number };
 }
 
 /** Execution trace — graded deliverable per problem statement */
@@ -60,6 +65,16 @@ export interface StructuredOutput {
   summary?: string;
 }
 
+export interface ResolvedImagePreview {
+  display_name?: string;
+  lat?: number;
+  lon?: number;
+  scene_id?: string;
+  collection?: string;
+  preview_b64?: string;
+  bbox?: number[];
+}
+
 /** Full query response from the backend */
 export interface QueryResponse {
   answer: string;
@@ -69,6 +84,7 @@ export interface QueryResponse {
   structured?: StructuredOutput | null;
   chart?: ChartEntry[] | null;
   chart_type?: ChartType | null;
+  resolved_images?: ResolvedImagePreview[] | null;
 }
 
 /** Application error shape */

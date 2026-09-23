@@ -283,7 +283,7 @@ make pitch-demo
 make pitch-demo-no-browser
 ```
 
-Test:
+Test (upload **or** location — location auto-fetches Sentinel-2 via Planetary Computer, no upload needed):
 
 ```bash
 curl -X POST http://localhost:8000/api/query \
@@ -293,6 +293,19 @@ curl http://localhost:8000/health | jq
 # alternative file fields (also accepted):
 curl -X POST http://localhost:8000/api/query \
   -F query="How many buildings?" -F input_mode=single -F images=@s2_chip.png | jq
+
+# Search by location (Nominatim → Planetary Computer sentinel-2-l2a, 2km AOI):
+curl -X POST http://localhost:8000/api/query \
+  -F query="Describe the land cover" \
+  -F input_mode=single -F location_query="Bengaluru, India" | jq
+# Direct coordinates (bypass geocoding):
+curl -X POST http://localhost:8000/api/query \
+  -F query="Describe the land cover" \
+  -F input_mode=single -F lat=12.97 -F lon=77.59 | jq
+# Bi-temporal: same location two dates, or two different places:
+curl -X POST http://localhost:8000/api/query \
+  -F query="What changed between these dates?" \
+  -F input_mode=bi-temporal -F location_query="Bengaluru, India" | jq
 ```
 
 ### Run a Complete Episode (Python)
@@ -307,6 +320,12 @@ with open("s2_chip.png","rb") as f:
 print(r.json()["answer"])
 print(r.json()["execution_trace"])
 print(r.json()["chart"], r.json()["chart_type"])
+
+# Search by location (no file needed — auto-fetches Sentinel-2):
+r = requests.post(f"{BACKEND}/api/query",
+  data={"query": "Describe the land cover", "input_mode": "single", "location_query": "Bengaluru, India"})
+print(r.json()["answer"])
+print(r.json()["resolved_images"][0]["preview_b64"][:60])  # data:image/png;base64,...
 
 # Bi-temporal change:
 with open("t1.png","rb") as f1, open("t2.png","rb") as f2:
@@ -341,11 +360,11 @@ open http://localhost:7860/health   # health
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` , `/api/health` | `HealthResponse` — `specialists` (`registry.health()`), `base_model`, `adapter_path`, `cuda_available`, `force_cpu`, `compute`, `device` |
-| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`) → `QueryResponse` |
+| `POST` | `/query` , `/api/query` | Multipart: `query` (str), `input_mode` (`single`/`optical-sar`/`bi-temporal`), `images` (1–2 files, repeated field; also `image_0`/`image_1`) **or** `location_query` (place name, e.g. `Bengaluru, India`) / `coordinates` (`lat,lon` or `lat`+`lon`) / `location_query_2`+`coordinates_2` for bi-temporal → `QueryResponse` |
 | `GET` | `/docs` | Swagger UI |
 | `GET` | `/` | Serves `frontend/dist/index.html` when built (Docker/Spaces), else `{"message": ...}` |
 
-`QueryResponse` shape (`backend/schemas/__init__.py:67` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`).
+`QueryResponse` shape (`backend/schemas/__init__.py:87` ↔ `frontend/src/types/api.ts:64`): `answer`, `confidence`, `execution_trace`, `evidence`, `structured{bullets,chart,chart_type}`, `chart`, `chart_type` (`distribution`/`count`/`change`), `resolved_images[{display_name,lat,lon,scene_id,collection,preview_b64}]` (present when location path used).
 
 ---
 
@@ -418,16 +437,16 @@ mvp/
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx                 # 3-zone console + health poll + query log
-│   │   ├── api/mockClient.ts       # real fetch client → /api/query + /api/health
+│   │   ├── api/mockClient.ts       # real fetch client → /api/query + /api/health (supports location)
 │   │   ├── types/api.ts            # ExecutionTrace / QueryResponse (mirrors backend/schemas)
-│   │   └── components/             # Header, ImageUploader, ImageryViewer, ResultsPanel, ChartPanel, ...
+│   │   └── components/             # Header, ImageUploader, LocationSearchInput, ImageryViewer, ResultsPanel, ChartPanel, ...
 │   ├── vite.config.ts              # proxy /api → 8000
 │   └── package.json                # React 18 + Vite 6
 ├── training/
 │   ├── notebooks/                  # satquery_ai_qlora_finetune.ipynb + vrsbench_rsvqa_sft.ipynb + cdvqa_change_sft.ipynb
 │   └── configs/                    # bigearthnet_stage1.json, vrsbench_rsvqa_stage2.json, cdvqa_stage3.json
 ├── data/loaders/                   # dataset-specific loaders (config-driven, never hardcoded paths)
-├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py
+├── tests/                          # test_controller_api.py, test_registry.py, test_vqa_wrapper.py, test_location.py
 ├── docs/
 │   ├── execution_trace_schema.md   # graded contract (Pydantic ↔ TypeScript)
 │   ├── hf_spaces.md                # Docker Spaces deploy
@@ -435,7 +454,7 @@ mvp/
 ├── scripts/pitch-demo.sh           # one-command demo (backend + frontend + health wait)
 ├── Dockerfile                      # HF Spaces Docker (multi-stage, PORT 7860)
 ├── Makefile                        # pitch-demo, backend, frontend, health, test, build
-├── requirements.txt                # inference + gradio + torchvision + ultralytics
+├── requirements.txt                # inference + gradio + torchvision + ultralytics + pystac-client + planetary-computer
 └── assets/banner3.png
 ```
 
@@ -482,6 +501,12 @@ SATQUERY_YOLO_WEIGHTS=yolov8n.pt         # or yolov8n-obb.pt (DOTA), or custom R
 SATQUERY_YOLO_CONF=0.25
 SATQUERY_YOLO_IOU=0.45
 SATQUERY_YOLO_CLASSES=                  # comma filter e.g. "car,truck" (empty = all)
+
+# Location search (Nominatim + Planetary Computer STAC, no GEE)
+SATQUERY_LOCATION_AOI_KM=2.0            # square AOI side length in km
+SATQUERY_STAC_ENDPOINT=https://planetarycomputer.microsoft.com/api/stac/v1
+SATQUERY_MAX_CLOUD_COVER=20             # % for scene selection
+SATQUERY_NOMINATIM_ENDPOINT=https://nominatim.openstreetmap.org/search
 
 # Task routing override
 SATQUERY_TASK_OVERRIDES=                # e.g. "vqa:custom_vqa,grounding:my_grounding"

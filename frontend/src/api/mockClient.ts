@@ -16,6 +16,20 @@ export async function submitQuery(request: QueryRequest): Promise<QueryResponse>
   request.images.forEach((file) => {
     formData.append("images", file, file.name);
   });
+  // Location alternative — server resolves via Nominatim + Planetary Computer STAC
+  if (request.location_query) formData.append("location_query", request.location_query);
+  if (request.location_query_2) formData.append("location_query_2", request.location_query_2);
+  if (request.coordinates) {
+    formData.append("coordinates", `${request.coordinates.lat},${request.coordinates.lon}`);
+    // also send as separate lat/lon for robustness
+    formData.append("lat", String(request.coordinates.lat));
+    formData.append("lon", String(request.coordinates.lon));
+  }
+  if (request.coordinates_2) {
+    formData.append("coordinates_2", `${request.coordinates_2.lat},${request.coordinates_2.lon}`);
+    formData.append("lat2", String(request.coordinates_2.lat));
+    formData.append("lon2", String(request.coordinates_2.lon));
+  }
 
   const res = await fetch("/api/query", {
     method: "POST",

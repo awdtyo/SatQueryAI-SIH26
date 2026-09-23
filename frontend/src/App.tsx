@@ -3,6 +3,7 @@ import type { InputMode, QueryResponse, UploadedImage, AppError } from "./types/
 import { submitQuery, checkHealth } from "./api/mockClient";
 import Header from "./components/Header";
 import ImageUploader from "./components/ImageUploader";
+import LocationSearchInput from "./components/LocationSearchInput";
 import ImageryViewer from "./components/ImageryViewer";
 import QueryInput from "./components/QueryInput";
 import ResultsPanel from "./components/ResultsPanel";
@@ -19,9 +20,31 @@ type HealthState = {
   specialists?: Record<string, unknown>;
 } | null;
 
+function dataUrlToFile(dataUrl: string, filename: string): File {
+  const [header, b64] = dataUrl.split(",");
+  const mime = header?.match(/:(.*?);/)?.[1] || "image/png";
+  const bin = atob(b64 || "");
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new File([bytes], filename, { type: mime });
+}
+
+function parseLatLonInput(s: string): { lat: number; lon: number } | null {
+  const m = s.trim().match(/^\s*([+-]?\d+(?:\.\d+)?)\s*[, ]\s*([+-]?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = parseFloat(m[1]!);
+  const lon = parseFloat(m[2]!);
+  if (isNaN(lat) || isNaN(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  return { lat, lon };
+}
+
 export default function App() {
   const [images, setImages] = useState<UploadedImage[]>([]);
   const [inputMode, setInputMode] = useState<InputMode>("single");
+  const [inputSource, setInputSource] = useState<"upload" | "location">("upload");
+  const [locationQuery, setLocationQuery] = useState("");
+  const [locationQuery2, setLocationQuery2] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [response, setResponse] = useState<QueryResponse | null>(null);
   const [error, setError] = useState<AppError | null>(null);
@@ -49,9 +72,21 @@ export default function App() {
 
   const handleSubmit = useCallback(
     async (query: string) => {
-      if (images.length === 0) {
-        setError({ message: "Upload at least one image before querying." });
-        return;
+      const isLocation = inputSource === "location";
+      const hasUpload = images.length > 0;
+      const hasLocation = locationQuery.trim().length > 0 || parseLatLonInput(locationQuery) !== null;
+
+      if (isLocation) {
+        if (!hasLocation) {
+          setError({ message: "Enter a place name or lat,lon before querying (or switch to Upload)." });
+          return;
+        }
+        // Bi-temporal needs only one location if second empty (server will fetch 2 dates)
+      } else {
+        if (!hasUpload) {
+          setError({ message: "Upload at least one image before querying (or switch to Search by location)." });
+          return;
+        }
       }
 
       setError(null);
@@ -59,11 +94,61 @@ export default function App() {
       setResponse(null);
 
       try {
-        const result = await submitQuery({
+        // Build request — location path resolves server-side via Nominatim + Planetary Computer
+        const req: Parameters<typeof submitQuery>[0] = {
           query,
           input_mode: inputMode,
-          images: images.map((img) => img.file),
-        });
+          images: isLocation ? [] : images.map((img) => img.file),
+        };
+        if (isLocation) {
+          const c1 = parseLatLonInput(locationQuery);
+          if (c1) {
+            req.coordinates = c1;
+          } else {
+            req.location_query = locationQuery.trim();
+          }
+          if (inputMode === "bi-temporal" && locationQuery2.trim()) {
+            const c2 = parseLatLonInput(locationQuery2);
+            if (c2) req.coordinates_2 = c2;
+            else req.location_query_2 = locationQuery2.trim();
+          }
+        }
+
+        const result = await submitQuery(req);
+
+        // If location was used, show fetched imagery in viewer (same as uploaded)
+        if (isLocation && result.resolved_images && result.resolved_images.length > 0) {
+          const newImages: UploadedImage[] = result.resolved_images
+            .filter((ri) => ri.preview_b64)
+            .map((ri, idx) => {
+              const label = ri.display_name || ri.scene_id || `Location ${idx + 1}`;
+              const filename = `location_${(ri.lat ?? 0).toFixed(4)}_${(ri.lon ?? 0).toFixed(4)}.png`;
+              let file: File;
+              let preview: string;
+              try {
+                file = dataUrlToFile(ri.preview_b64!, filename);
+                preview = ri.preview_b64!;
+              } catch {
+                // Fallback: create a 1x1 placeholder
+                const blob = new Blob([], { type: "image/png" });
+                file = new File([blob], filename, { type: "image/png" });
+                preview = ri.preview_b64!;
+              }
+              const role =
+                inputMode === "optical-sar"
+                  ? idx === 0
+                    ? "optical"
+                    : "sar"
+                  : inputMode === "bi-temporal"
+                    ? idx === 0
+                      ? "t1"
+                      : "t2"
+                    : undefined;
+              return { file, preview, label, role };
+            });
+          if (newImages.length > 0) setImages(newImages);
+        }
+
         setResponse(result);
         setQueryHistory((prev) => [query, ...prev].slice(0, 20));
       } catch (err) {
@@ -75,7 +160,7 @@ export default function App() {
         setIsLoading(false);
       }
     },
-    [images, inputMode],
+    [images, inputMode, inputSource, locationQuery, locationQuery2],
   );
 
   return (
@@ -106,14 +191,30 @@ export default function App() {
           <section className="panel flex-shrink-0">
             <div className="panel-header">
               <span className="panel-label">Imagery Input</span>
+              <span className="ml-auto tag-muted text-[10px]">{inputSource === "location" ? "LOCATION" : "UPLOAD"}</span>
             </div>
-            <div className="panel-body">
-              <ImageUploader
-                images={images}
-                setImages={setImages}
+            <div className="panel-body space-y-4">
+              <LocationSearchInput
                 inputMode={inputMode}
-                setInputMode={setInputMode}
+                locationQuery={locationQuery}
+                setLocationQuery={setLocationQuery}
+                locationQuery2={locationQuery2}
+                setLocationQuery2={setLocationQuery2}
+                inputSource={inputSource}
+                setInputSource={setInputSource}
               />
+              {/* Show uploader only when source is upload, or as secondary when location */}
+              <div className={inputSource === "location" ? "opacity-60" : ""}>
+                <ImageUploader
+                  images={images}
+                  setImages={setImages}
+                  inputMode={inputMode}
+                  setInputMode={setInputMode}
+                />
+              </div>
+              {inputSource === "location" && images.length > 0 && (
+                <p className="text-[11px] text-signal-green">Location preview: {images.length} fetched image(s) shown in viewer → will be used on next query if you stay in location mode.</p>
+              )}
             </div>
           </section>
 

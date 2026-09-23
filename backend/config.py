@@ -142,6 +142,19 @@ SUPPORTED_INPUT_MODES: set[str] = {"single", "optical-sar", "bi-temporal"}
 # Supported formats — GeoTIFF/TIFF preferred; PNG/JPEG allowed for benchmarks
 SUPPORTED_FORMATS: set[str] = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 
+# --- Location-based imagery (search by place name / lat,lon) ---
+# Free/no-auth: Nominatim for geocoding + Planetary Computer STAC for Sentinel-2
+SATQUERY_LOCATION_AOI_KM: float = float(os.getenv("SATQUERY_LOCATION_AOI_KM", "2.0"))
+SATQUERY_STAC_ENDPOINT: str = os.getenv(
+    "SATQUERY_STAC_ENDPOINT",
+    "https://planetarycomputer.microsoft.com/api/stac/v1",
+)
+SATQUERY_MAX_CLOUD_COVER: float = float(os.getenv("SATQUERY_MAX_CLOUD_COVER", "20"))
+SATQUERY_NOMINATIM_ENDPOINT: str = os.getenv(
+    "SATQUERY_NOMINATIM_ENDPOINT",
+    "https://nominatim.openstreetmap.org/search",
+)
+
 # For env-based override of the task map (comma-separated "task:model" pairs)
 # e.g. TASK_OVERRIDES="vqa:custom_vqa,grounding:my_grounding"
 _task_overrides_raw = os.getenv("SATQUERY_TASK_OVERRIDES", "")

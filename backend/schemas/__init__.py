@@ -62,7 +62,37 @@ class StructuredOutput(BaseModel):
     summary: str | None = Field(default=None, description="Optional one-line summary")
 
 
+# --- Location input (search by place name) ---
+
+class Coordinates(BaseModel):
+    lat: float = Field(ge=-90, le=90, description="Latitude")
+    lon: float = Field(ge=-180, le=180, description="Longitude")
+
+
+class QueryRequest(BaseModel):
+    query: str = Field(description="Natural language question")
+    input_mode: str = Field(default="single", description="single | optical-sar | bi-temporal")
+    # Alternative to images — resolved via geocode + Planetary Computer STAC
+    location_query: str | None = Field(default=None, description="Place name (Nominatim), e.g. 'Bengaluru, India'")
+    coordinates: Coordinates | None = Field(default=None, description="Direct lat/lon alternative to place name")
+    # For bi-temporal: optional second location/date
+    location_query_2: str | None = Field(default=None, description="Second place for bi-temporal (e.g. T2 AOI)")
+    coordinates_2: Coordinates | None = Field(default=None, description="Second lat/lon for bi-temporal")
+
+    # Note: images are sent as multipart files, not JSON — see backend/api/__init__.py
+
+
 # --- API payloads ---
+
+class ResolvedImagePreview(BaseModel):
+    display_name: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    scene_id: str | None = None
+    collection: str | None = None
+    preview_b64: str | None = Field(default=None, description="data:image/png;base64,... preview for ImageryViewer")
+    bbox: list[float] | None = None
+
 
 class QueryResponse(BaseModel):
     answer: str
@@ -72,6 +102,7 @@ class QueryResponse(BaseModel):
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
     chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
+    resolved_images: list[ResolvedImagePreview] | None = Field(default=None, description="Previews for location-fetched imagery (to show in ImageryViewer)")
 
 
 class HealthResponse(BaseModel):
@@ -91,6 +122,9 @@ __all__ = [
     "ExecutionTrace",
     "ChartEntry",
     "StructuredOutput",
+    "Coordinates",
+    "QueryRequest",
+    "ResolvedImagePreview",
     "QueryResponse",
     "HealthResponse",
 ]
