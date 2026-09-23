@@ -28,9 +28,11 @@ def test_normal_vqa_answer_is_natural_and_visualization_null():
         assert resp.answer
         assert "forest" in resp.answer.lower() or "water" in resp.answer.lower()
         assert "[0.0" not in resp.answer
-        # Visualization must be null for normal VQA
-        assert resp.chart is None, "Normal VQA should have visualization null"
-        assert resp.chart_type is None
+        # Every successful query must now have a visualization (fallback pipeline)
+        assert resp.chart is not None, "Every successful query must have visualization"
+        assert resp.chart_type is not None
+        assert len(resp.chart) > 0
+        assert resp.visualization is not None
         # Confidence should be present and not fabricated as 0
         assert resp.confidence == 0.85
 
@@ -48,9 +50,11 @@ def test_vqa_with_exact_problematic_output_is_fixed():
         assert "3 spatial regions" in resp.answer.lower() or "spatial regions" in resp.answer.lower()
         # Raw preserved in evidence
         assert any(ev.coordinates for ev in resp.evidence)
-        # Chart must be null, not undefined
-        assert resp.chart is None
-        assert resp.chart_type is None
+        # Every successful query must have visualization (fallback)
+        assert resp.chart is not None
+        assert resp.chart_type is not None
+        assert resp.visualization is not None
+        assert len(resp.chart) > 0
 
 
 def test_quantitative_task_has_valid_chart():
@@ -82,8 +86,12 @@ def test_task_with_no_chart_data_has_visualization_null():
     }
     with patch("backend.registry.predict", return_value=fake):
         resp = handle(query="What is present?", images=[("test.png", _png())], input_mode="single")
-        assert resp.chart is None
-        assert resp.chart_type is None
+        # Every successful query must have fallback visualization
+        assert resp.chart is not None
+        assert resp.chart_type is not None
+        assert resp.visualization is not None
+        assert len(resp.chart) > 0
+        assert resp.visualization["type"] in ["bar", "pie", "line", "donut", "scatter"]
 
 
 def test_invalid_chart_results_in_null():
@@ -97,8 +105,14 @@ def test_invalid_chart_results_in_null():
     }
     with patch("backend.registry.predict", return_value=fake):
         resp = handle(query="What is present?", images=[("test.png", _png())], input_mode="single")
-        assert resp.chart is None
-        assert resp.chart_type is None
+        # Invalid chart should be replaced by fallback, not left as null/undefined
+        assert resp.chart is not None
+        assert resp.chart_type is not None
+        assert resp.visualization is not None
+        # Ensure no undefined/null labels/values
+        for c in resp.chart:
+            assert c.label is not None and c.label != "undefined"
+            assert isinstance(c.value, (int, float)) and c.value == c.value
 
 
 def test_raw_coordinates_preserved_in_evidence_not_overwriting_answer():

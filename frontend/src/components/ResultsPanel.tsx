@@ -32,9 +32,13 @@ function EvidenceBadge({ evidence }: { evidence: EvidenceRef }) {
 export default function ResultsPanel({ response }: Props) {
   if (!response) return null;
 
-  // Prefer structured chart if present, else fallback to flat chart — question-aware
-  const chart = response.structured?.chart ?? response.chart ?? [];
-  const chartType = response.structured?.chart_type ?? response.chart_type ?? (response.execution_trace?.task === "count" ? "count" : "distribution");
+  // Prefer canonical visualization, else fallback to structured/flat chart — ensures every successful query has a graph
+  const vizData = (response as any).visualization?.data ?? response.structured?.chart ?? response.chart ?? [];
+  const vizType = (response as any).visualization?.type ?? response.structured?.chart_type ?? response.chart_type ?? (response.execution_trace?.task === "count" ? "count" : "bar");
+  const vizTitle = (response as any).visualization?.title;
+  // Normalize to ChartEntry[] with strict validation
+  const chart = Array.isArray(vizData) ? vizData.filter((c: any) => c && typeof c.label === "string" && typeof c.value === "number" && isFinite(c.value)) : [];
+  const chartType = vizType;
 
   return (
     <div className="space-y-4">

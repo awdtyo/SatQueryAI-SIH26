@@ -97,6 +97,8 @@ class QueryResponse(BaseModel):
     structured: StructuredOutput | None = Field(default=None, description="Parsed bullets/chart")
     chart: list[ChartEntry] | None = Field(default=None, description="Alias for structured.chart for flat access")
     chart_type: Literal["distribution", "count", "change", "none"] | None = Field(default=None, description="Question-aware chart type")
+    # Canonical visualization — always present for successful queries (fallback hierarchy)
+    visualization: dict[str, Any] | None = Field(default=None, description="Canonical visualization {type, title, data} always present for success")
     # Active-scene context: set when the query was analyzed against a SELECTED satellite scene
     # (Selected Satellite Image Query Mode). Carries the scene id/collection/datetime/aoi that
     # was actually analyzed so the UI can render an "Active Scene" card + provenance.

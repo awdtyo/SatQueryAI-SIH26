@@ -834,18 +834,53 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
             evidence_refs=evidence_refs,
             total_latency_ms=total_latency,
         )
-        # Structured for retrieval: we can pass trace as structured for UI
+        # Structured for retrieval: build fallback visualization from real CDSE metadata
         from backend.schemas import StructuredOutput
 
-        structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
+        # Use fallback to ensure every successful retrieval has a graph (e.g., cloud cover, scenes retrieved)
+        try:
+            from backend.utils.visualization import build_fallback_visualization, validate_visualization
+
+            fb_chart, fb_type, fb_viz = build_fallback_visualization(
+                task, query, result, None, evidence_raw, confidence, structured, aoi
+            )
+            # Try to enrich with actual satellite trace stats if available
+            if not fb_viz or not validate_visualization(fb_viz):
+                # Fallback to sat_trace stats
+                if sat_trace:
+                    chart_entries = []
+                    if isinstance(sat_trace.get("results_found"), (int, float)):
+                        chart_entries.append({"label": "Scenes found", "value": float(sat_trace["results_found"])})
+                    if isinstance(sat_trace.get("results_after_filtering"), (int, float)):
+                        chart_entries.append({"label": "Filtered", "value": float(sat_trace["results_after_filtering"])})
+                    if chart_entries:
+                        from backend.schemas import ChartEntry
+
+                        fb_chart = [ChartEntry(label=c["label"], value=c["value"]) for c in chart_entries]  # type: ignore
+                        fb_type = "bar"
+                        fb_viz = {"type": "bar", "title": "Retrieval stats", "data": chart_entries}
+            if fb_viz and validate_visualization(fb_viz):
+                structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
+                chart, chart_type, visualization = fb_chart, fb_type, fb_viz
+            else:
+                raise ValueError("Fallback invalid")
+        except Exception:
+            from backend.schemas import ChartEntry
+
+            fb_chart = [ChartEntry(label="Scenes", value=float(sat_trace.get("results_found", 1) if sat_trace else 1))]
+            visualization = {"type": "bar", "title": "Retrieval", "data": [{"label": "Scenes", "value": float(sat_trace.get("results_found", 1) if sat_trace else 1)}]}
+            chart, chart_type = fb_chart, "bar"
+            structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="bar")  # type: ignore
+
         return QueryResponse(
             answer=answer,
             confidence=confidence,
             execution_trace=trace,
             evidence=evidence_refs,
             structured=structured_obj,
-            chart=None,
-            chart_type=None,
+            chart=chart,
+            chart_type=chart_type,  # type: ignore
+            visualization=visualization,
         )
 
     # Spectral-index path — no image validation, needs scene + AOI
@@ -962,15 +997,67 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         )
         from backend.schemas import StructuredOutput
 
-        structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
+        # Build fallback visualization for spectral (uses actual NDVI stats if available)
+        try:
+            from backend.utils.visualization import build_fallback_visualization, validate_visualization
+
+            fb_chart, fb_type, fb_viz = build_fallback_visualization(
+                task, query, result, None, evidence_raw, confidence, scene, aoi
+            )
+            # Prefer spectral stats if fallback didn't pick them
+            if not fb_viz or not validate_visualization(fb_viz):
+                # Try to build from spectral stats directly
+                stats = spec_data.get("stats", {}) if isinstance(spec_data, dict) else {}
+                if stats and isinstance(stats, dict):
+                    chart_entries = []
+                    for k in ["min", "mean", "max", "median"]:
+                        if k in stats and isinstance(stats[k], (int, float)):
+                            chart_entries.append({"label": k.title(), "value": float(stats[k])})
+                    if chart_entries:
+                        from backend.schemas import ChartEntry
+
+                        fb_chart = [ChartEntry(label=c["label"], value=c["value"]) for c in chart_entries]  # type: ignore
+                        fb_type = "bar"
+                        fb_viz = {"type": "bar", "title": f"{index} statistics", "data": chart_entries}
+            if fb_viz and validate_visualization(fb_viz):
+                structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
+                chart, chart_type, visualization = fb_chart, fb_type, fb_viz
+            else:
+                structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
+                chart, chart_type, visualization = None, None, None
+        except Exception:
+            from backend.schemas import StructuredOutput
+
+            structured_obj = StructuredOutput(bullets=[], chart=[], chart_type=None)
+            chart, chart_type, visualization = None, None, None
+
+        # Ensure visualization always present for success
+        if visualization is None:
+            try:
+                from backend.utils.visualization import build_fallback_visualization
+
+                fb_chart2, fb_type2, fb_viz2 = build_fallback_visualization(
+                    task, query, result, None, evidence_raw, confidence, scene, aoi
+                )
+                chart, chart_type, visualization = fb_chart2, fb_type2, fb_viz2
+                structured_obj = StructuredOutput(bullets=[], chart=fb_chart2 or [], chart_type=fb_type2)  # type: ignore
+            except Exception:
+                from backend.schemas import ChartEntry
+
+                fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw)))]
+                visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw))}]}
+                chart, chart_type = fb_chart, "bar"
+                structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="bar")  # type: ignore
+
         return QueryResponse(
             answer=answer,
             confidence=confidence,
             execution_trace=trace,
             evidence=evidence_refs,
             structured=structured_obj,
-            chart=None,
-            chart_type=None,
+            chart=chart,
+            chart_type=chart_type,  # type: ignore
+            visualization=visualization,
             scene_context=_scene_ctx(scene, aoi=aoi, source="bands"),
             analysis={**spec_data, "type": "spectral_index"},
         )
@@ -1070,23 +1157,18 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
     # Structured bullets/chart from specialist (question-aware)
     structured_obj, chart_list, chart_type = _build_structured(result, task)
 
-    # Chart should only be rendered for quantitative tasks; for normal VQA, set to null to avoid svgDistribution undefined
-    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
-        chart_list = None
-        chart_type = None  # type: ignore
-        if structured_obj:
-            structured_obj.chart = []
-            structured_obj.chart_type = None  # type: ignore
-    # Strict chart validation — ensure label/value are valid, else null
+    # Strict chart validation — ensure label/value are valid
     if chart_list is not None:
         valid_entries: list[Any] = []
         for c in chart_list:
             try:
                 if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
-                    # Check not NaN/inf and within range
-                    if c.value != c.value or c.value in (float("inf"), float("-inf")):  # NaN or inf
+                    if c.value != c.value or c.value in (float("inf"), float("-inf")):
                         continue
                     if -100 <= c.value <= 1000:
+                        # Reject raw coordinate arrays accidentally used as chart
+                        if isinstance(c.value, (list, tuple)):
+                            continue
                         valid_entries.append(c)
             except Exception:
                 continue
@@ -1099,6 +1181,68 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         else:
             chart_list = valid_entries
 
+    # Visualization fallback pipeline — ensure EVERY successful query has a valid graph
+    visualization: dict[str, Any] | None = None
+    if chart_list is not None and chart_type is not None:
+        try:
+            from backend.utils.visualization import _chart_to_viz, validate_visualization
+
+            visualization = _chart_to_viz(chart_list, chart_type)
+            if not validate_visualization(visualization):
+                visualization = None
+                chart_list = None
+                chart_type = None  # type: ignore
+        except Exception:
+            visualization = None
+
+    if visualization is None:
+        try:
+            from backend.utils.visualization import build_fallback_visualization, validate_visualization
+
+            fb_chart, fb_type, fb_viz = build_fallback_visualization(
+                task, query, result, pil_images, evidence_raw, confidence, scene, aoi
+            )
+            if fb_viz and validate_visualization(fb_viz):
+                chart_list = fb_chart
+                chart_type = fb_type  # type: ignore
+                visualization = fb_viz
+                if structured_obj is None:
+                    from backend.schemas import StructuredOutput
+
+                    structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
+                else:
+                    structured_obj.chart = fb_chart or []
+                    structured_obj.chart_type = fb_type  # type: ignore
+            else:
+                # Last resort already handled inside build_fallback
+                chart_list = fb_chart
+                chart_type = fb_type  # type: ignore
+                visualization = fb_viz
+        except Exception as e:
+            logger.debug(f"Fallback visualization failed: {e}")
+            from backend.schemas import ChartEntry
+
+            fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
+            visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
+            chart_list = fb_chart
+            chart_type = "distribution"  # type: ignore
+            if structured_obj is None:
+                from backend.schemas import StructuredOutput
+
+                structured_obj = StructuredOutput(bullets=[], chart=fb_chart, chart_type="distribution")  # type: ignore
+            else:
+                structured_obj.chart = fb_chart
+                structured_obj.chart_type = "distribution"  # type: ignore
+
+    # Ensure visualization always present for success
+    if visualization is None:
+        from backend.schemas import ChartEntry
+
+        fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
+        visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
+        chart_list = fb_chart
+        chart_type = "distribution"  # type: ignore
+
     return QueryResponse(
         answer=answer,
         confidence=confidence,
@@ -1107,6 +1251,7 @@ def handle(query: str, images: list[Any], input_mode: str = "single", retrieval_
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
+        visualization=visualization,
     )
 
 
@@ -1293,13 +1438,7 @@ def _handle_active_scene(
 
     structured_obj, chart_list, chart_type = _build_structured(result, task)
 
-    # Chart validation for active scene — same as main handle
-    if task in ("vqa", "captioning", "visual_question_answering") and not _is_quantitative_query(query):
-        chart_list = None
-        chart_type = None  # type: ignore
-        if structured_obj:
-            structured_obj.chart = []
-            structured_obj.chart_type = None  # type: ignore
+    # Strict chart validation
     if chart_list is not None:
         valid_entries: list[Any] = []
         for c in chart_list:
@@ -1307,7 +1446,7 @@ def _handle_active_scene(
                 if c.label and isinstance(c.label, str) and isinstance(c.value, (int, float)):
                     if c.value != c.value or c.value in (float("inf"), float("-inf")):
                         continue
-                    if -100 <= c.value <= 1000:
+                    if -100 <= c.value <= 1000 and not isinstance(c.value, (list, tuple)):
                         valid_entries.append(c)
             except Exception:
                 continue
@@ -1320,6 +1459,49 @@ def _handle_active_scene(
         else:
             chart_list = valid_entries
 
+    # Visualization fallback — ensure every successful active-scene query has graph
+    visualization: dict[str, Any] | None = None
+    if chart_list is not None and chart_type is not None:
+        try:
+            from backend.utils.visualization import _chart_to_viz, validate_visualization
+
+            visualization = _chart_to_viz(chart_list, chart_type)
+            if not validate_visualization(visualization):
+                visualization = None
+                chart_list = None
+                chart_type = None  # type: ignore
+        except Exception:
+            visualization = None
+
+    if visualization is None:
+        try:
+            from backend.utils.visualization import build_fallback_visualization, validate_visualization
+
+            fb_chart, fb_type, fb_viz = build_fallback_visualization(
+                task, query, result, [pil_image], evidence_raw, confidence, scene, aoi
+            )
+            if fb_viz and validate_visualization(fb_viz):
+                chart_list = fb_chart
+                chart_type = fb_type  # type: ignore
+                visualization = fb_viz
+                if structured_obj is None:
+                    from backend.schemas import StructuredOutput
+
+                    structured_obj = StructuredOutput(bullets=[], chart=fb_chart or [], chart_type=fb_type)  # type: ignore
+                else:
+                    structured_obj.chart = fb_chart or []
+                    structured_obj.chart_type = fb_type  # type: ignore
+        except Exception as e:
+            logger.debug(f"Fallback visualization (active scene) failed: {e}")
+
+    if visualization is None:
+        from backend.schemas import ChartEntry
+
+        fb_chart = [ChartEntry(label="Evidence", value=float(len(evidence_raw) if evidence_raw else 1))]
+        visualization = {"type": "bar", "title": "Evidence summary", "data": [{"label": "Evidence", "value": float(len(evidence_raw) if evidence_raw else 1)}]}
+        chart_list = fb_chart
+        chart_type = "distribution"  # type: ignore
+
     return QueryResponse(
         answer=answer,
         confidence=confidence,
@@ -1328,6 +1510,7 @@ def _handle_active_scene(
         structured=structured_obj,
         chart=chart_list,
         chart_type=chart_type,  # type: ignore
+        visualization=visualization,
         scene_context=scene_ctx,
         analysis={
             "type": "active_scene_image",
