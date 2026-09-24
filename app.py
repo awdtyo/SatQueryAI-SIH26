@@ -253,7 +253,6 @@ def predict(
     input_mode: str,
     image_a: Any,
     image_b: Any | None = None,
-    progress: Any = None,
     location_query: str | None = None,
     location_query_2: str | None = None,
 ) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any] | None]:
@@ -597,6 +596,15 @@ with gr.Blocks(
         outputs=[answer, confidence, trace, evidence, chart_state, fetched_gallery],
         show_progress=True,
     ).then(fn=_update_chart, inputs=[chart_state, chart_type], outputs=[chart_plot])
+
+    # Pressing Enter in location boxes or query should also execute (UX parity with React QueryInput Enter)
+    for _tb in (location_query, location_query_2, query):
+        _tb.submit(
+            fn=predict,
+            inputs=[query, input_mode, image_a, image_b, location_query, location_query_2],
+            outputs=[answer, confidence, trace, evidence, chart_state, fetched_gallery],
+            show_progress=True,
+        ).then(fn=_update_chart, inputs=[chart_state, chart_type], outputs=[chart_plot])
 
     chart_type.change(fn=_update_chart, inputs=[chart_state, chart_type], outputs=[chart_plot])
 
