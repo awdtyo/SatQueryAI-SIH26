@@ -233,6 +233,20 @@ def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[n
         return None
 
 
+def _b64_to_pil(b64_str: str) -> Image.Image | None:
+    """Convert data:image/png;base64,... or raw base64 to PIL.Image."""
+    try:
+        import base64
+
+        data = b64_str
+        if "," in data:
+            data = data.split(",", 1)[1]
+        raw = base64.b64decode(data)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        return None
+
+
 @spaces.GPU(duration=60)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
 def predict(
     query: str,
@@ -240,7 +254,9 @@ def predict(
     image_a: Any,
     image_b: Any | None = None,
     progress: Any = None,
-) -> tuple[str, float, dict[str, Any], str, dict[str, Any]]:
+    location_query: str | None = None,
+    location_query_2: str | None = None,
+) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any] | None]:
     """Gradio handler — decorated for ZeroGPU scheduling.
 
     Args:
@@ -248,41 +264,69 @@ def predict(
         input_mode: single | optical-sar | bi-temporal (from gr.Radio)
         image_a: first image (PIL from gr.Image)
         image_b: second image for optical-sar / bi-temporal (PIL or None)
+        location_query: place name or lat,lon (alternative to upload, via Nominatim + Planetary Computer)
+        location_query_2: second place for bi-temporal T2 (optional, single location → 2 dates)
 
     Returns:
-        (answer_markdown_bullets, confidence, execution_trace_json, evidence_md, chart_data)
-        Gradio outputs: Markdown, Number, JSON, Markdown, State (for Plot toggle bar/pie identical to React)
+        (answer_markdown_bullets, confidence, execution_trace_json, evidence_md, chart_data, fetched_gallery)
+        Gradio outputs: Markdown, Number, JSON, Markdown, State (for Plot) + Gallery (for location preview)
     """
     started = time.time()
     if not query or not query.strip():
-        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "none"}
+        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "none"}, None
 
     # Validate mode
     mode = (input_mode or "single").strip().lower()
     if mode not in app_config.SUPPORTED_INPUT_MODES:
-        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "none"}
+        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "none"}, None
 
-    # Collect images per mode
+    # Collect images per mode — with location fallback (alternative to upload)
+    loc_q = (location_query or "").strip() or None
+    loc_q2 = (location_query_2 or "").strip() or None
+    has_location = bool(loc_q or loc_q2)
+    # Try to interpret location_query as lat,lon for direct coordinates fast-path is handled server-side via geocode parse
     images: list[Any] = []
     try:
-        if mode == "single":
-            if image_a is None:
-                return "Upload one image for single mode.", 0.0, {}, "", {"data": [], "type": "none"}
-            images.append(_coerce_gradio_image(image_a, "image.png"))
+        if has_location and image_a is None and image_b is None:
+            # Pure location mode — let controller fetch Sentinel-2 via Planetary Computer (no image validation here)
+            images = []
+        elif mode == "single":
+            if has_location and image_a is None:
+                images = []  # location will be resolved server-side
+            elif image_a is None:
+                return "Upload one image for single mode, or enter a place name / lat,lon in *Search by location*.", 0.0, {}, "", {"data": [], "type": "none"}, None
+            else:
+                images.append(_coerce_gradio_image(image_a, "image.png"))
         elif mode in ("optical-sar", "bi-temporal"):
-            if image_a is None or image_b is None:
-                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "none"}
-            images.append(_coerce_gradio_image(image_a, "image0.png"))
-            images.append(_coerce_gradio_image(image_b, "image1.png"))
+            if has_location and image_a is None and image_b is None:
+                images = []  # location fetches both images (optical+SAR or T1+T2)
+            elif has_location and (image_a is None or image_b is None):
+                # For bi-temporal with single location → server fetches 2 dates, so one location is enough
+                if has_location and mode == "bi-temporal":
+                    images = []
+                else:
+                    return f"Upload two images for {mode} (both slots required), or enter location(s) to auto-fetch.", 0.0, {}, "", {"data": [], "type": "none"}, None
+            elif image_a is None or image_b is None:
+                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "none"}, None
+            else:
+                images.append(_coerce_gradio_image(image_a, "image0.png"))
+                images.append(_coerce_gradio_image(image_b, "image1.png"))
         else:
-            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "none"}
+            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "none"}, None
     except Exception as e:
         logger.exception("Image coercion failed: %s", e)
-        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "none"}
+        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "none"}, None
 
     # Delegate to controller (reuses validate_inputs, classify_task, registry.predict, ExecutionTrace)
+    # If location provided and images empty, controller resolves via geocode + Planetary Computer STAC
     try:
-        resp = controller_handle(query=query.strip(), images=images, input_mode=mode)
+        resp = controller_handle(
+            query=query.strip(),
+            images=images,
+            input_mode=mode,
+            location_query=loc_q,
+            location_query_2=loc_q2,
+        )
     except Exception as e:
         # Controller already catches specialist failures, but validate_inputs raises HTTPException
         # which we surface as user-visible error with full detail
@@ -291,7 +335,7 @@ def predict(
             from fastapi import HTTPException as _HTTPException
 
             if isinstance(e, _HTTPException):
-                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "none"}
+                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "none"}, None
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
@@ -310,7 +354,7 @@ def predict(
                 vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
         except Exception:
             pass
-        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}", {"data": [], "type": "none"}
+        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}", {"data": [], "type": "none"}, None
 
     # Build evidence markdown for display
     evidence_md_parts: list[str] = []
@@ -360,7 +404,32 @@ def predict(
 
     chart_state = {"data": chart_data, "type": chart_type_data}
 
-    return resp.answer, conf, trace_dict, evidence_md, chart_state
+    # Build fetched gallery for location mode (show Sentinel-2 preview in viewer)
+    fetched_gallery: list[Any] | None = None
+    try:
+        resolved = getattr(resp, "resolved_images", None)
+        if resolved:
+            gallery = []
+            for ri in resolved:
+                b64 = ri.preview_b64 if hasattr(ri, "preview_b64") else ri.get("preview_b64") if isinstance(ri, dict) else None
+                display = ri.display_name if hasattr(ri, "display_name") else ri.get("display_name") if isinstance(ri, dict) else None
+                scene = ri.scene_id if hasattr(ri, "scene_id") else ri.get("scene_id") if isinstance(ri, dict) else None
+                caption = display or scene or "Fetched Sentinel-2"
+                pil = _b64_to_pil(b64) if b64 else None
+                if pil is not None:
+                    gallery.append((pil, caption))
+                elif b64:
+                    # Fallback: keep b64 as is for Gallery
+                    gallery.append((b64, caption))
+            if gallery:
+                fetched_gallery = gallery
+        # Also surface location in trace for Gradio viewer
+        if has_location and trace_dict.get("parameters", {}).get("location_resolved"):
+            trace_dict["_location_preview_count"] = len(fetched_gallery) if fetched_gallery else 0
+    except Exception:
+        fetched_gallery = None
+
+    return resp.answer, conf, trace_dict, evidence_md, chart_state, fetched_gallery
 
 
 # ── Gradio UI — 3-zone parity with frontend/src/App.tsx but in Blocks ──
@@ -401,11 +470,38 @@ with gr.Blocks(
             image_b = gr.Image(label="Second image (SAR / T2) — required for optical-sar / bi-temporal", type="pil", sources=["upload"], height=280, visible=False)
             gr.Markdown("`GeoTIFF/TIFF/PNG/JPEG` accepted (`.tif/.tiff/.png/.jpg/.jpeg`). Controller validates `single→1` `optical-sar→2` `bi-temporal→2` and `Geotiff` bands via `rasterio` when installed.")
 
-            # Toggle second image visibility by mode
-            def _toggle_second(mode: str):
-                return gr.update(visible=mode in ("optical-sar", "bi-temporal"))
+            # --- Search by location (alternative to upload) ---
+            gr.Markdown("### Search by location _(alternative to upload)_")
+            gr.Markdown(
+                "Type a place name **or** `lat,lon` and skip upload — auto-fetches Sentinel-2 via **Nominatim → Planetary Computer** (`sentinel-2-l2a`, 2km AOI, least-cloudy). For `bi-temporal` with single location, fetches 2 most recent dates."
+            )
+            location_query = gr.Textbox(
+                label="Place name or coordinates (location T1 / single)",
+                placeholder="Bengaluru, India  or  12.97, 77.59",
+                lines=1,
+            )
+            location_query_2 = gr.Textbox(
+                label="Second location (T2) — bi-temporal only (leave empty for 2 dates at T1)",
+                placeholder="Mumbai, India  or  19.07, 72.87",
+                lines=1,
+                visible=False,
+            )
+            fetched_gallery = gr.Gallery(
+                label="Fetched Sentinel-2 Preview (location mode)",
+                show_label=True,
+                columns=2,
+                height=280,
+                visible=True,
+                object_fit="contain",
+            )
+            gr.Markdown("`Upload` takes precedence if both are provided; leave images empty to use location.")
 
-            input_mode.change(fn=_toggle_second, inputs=[input_mode], outputs=[image_b])
+            # Toggle second image + second location visibility by mode
+            def _toggle_second(mode: str):
+                vis = mode in ("optical-sar", "bi-temporal")
+                return gr.update(visible=vis), gr.update(visible=mode == "bi-temporal")
+
+            input_mode.change(fn=_toggle_second, inputs=[input_mode], outputs=[image_b, location_query_2])
 
             gr.Markdown("### Query")
             query = gr.Textbox(
@@ -494,11 +590,11 @@ with gr.Blocks(
     # Initial health load — prefilled, no GPU quota cost
     demo.load(fn=_health_placeholder, outputs=[health])
 
-    # Wire predict — queue required for @spaces.GPU; show status updates; identical bullets+charts
+    # Wire predict — queue required for @spaces.GPU; show status updates; identical bullets+charts + fetched gallery
     run_btn.click(
         fn=predict,
-        inputs=[query, input_mode, image_a, image_b],
-        outputs=[answer, confidence, trace, evidence, chart_state],
+        inputs=[query, input_mode, image_a, image_b, location_query, location_query_2],
+        outputs=[answer, confidence, trace, evidence, chart_state, fetched_gallery],
         show_progress=True,
     ).then(fn=_update_chart, inputs=[chart_state, chart_type], outputs=[chart_plot])
 
@@ -513,9 +609,23 @@ with gr.Blocks(
     )
 
     clear_btn.click(
-        fn=lambda: (None, None, "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None),
+        fn=lambda: (None, None, "", "", "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None, None),
         inputs=None,
-        outputs=[image_a, image_b, query, input_mode, answer, confidence, trace, evidence, chart_state, chart_plot],
+        outputs=[
+            image_a,
+            image_b,
+            location_query,
+            location_query_2,
+            query,
+            input_mode,
+            answer,
+            confidence,
+            trace,
+            evidence,
+            chart_state,
+            chart_plot,
+            fetched_gallery,
+        ],
     )
 
 # Required for @spaces.GPU scheduling — without queue the GPU worker never drains and UI hangs
