@@ -8,6 +8,14 @@ import type { QueryRequest, QueryResponse } from "../types/api";
  * loaded from that config. No model path is hardcoded here.
  */
 
+const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, "") || "";
+
+function apiUrl(path: string): string {
+  // Azure Static Web Apps: VITE_API_BASE=https://<hf-space>.hf.space → direct HF inference (free ZeroGPU)
+  // Local dev: VITE_API_BASE="" → Vite proxy /api → localhost:8000 (make pitch-demo)
+  return `${API_BASE}${path}`;
+}
+
 export async function submitQuery(request: QueryRequest): Promise<QueryResponse> {
   const formData = new FormData();
   formData.append("query", request.query);
@@ -31,7 +39,7 @@ export async function submitQuery(request: QueryRequest): Promise<QueryResponse>
     formData.append("lon2", String(request.coordinates_2.lon));
   }
 
-  const res = await fetch("/api/query", {
+  const res = await fetch(apiUrl("/api/query"), {
     method: "POST",
     body: formData,
   });
@@ -53,7 +61,7 @@ export async function submitQuery(request: QueryRequest): Promise<QueryResponse>
 }
 
 export async function checkHealth(): Promise<{ status: string; specialists?: unknown; adapter_path?: string; base_model?: string }> {
-  const res = await fetch("/api/health");
+  const res = await fetch(apiUrl("/api/health"));
   if (!res.ok) throw new Error(`Health check failed: ${res.status}`);
   return res.json();
 }

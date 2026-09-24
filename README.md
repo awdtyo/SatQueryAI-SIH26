@@ -516,6 +516,17 @@ SATQUERY_TASK_OVERRIDES=                # e.g. "vqa:custom_vqa,grounding:my_grou
 **Frontend:** `cd frontend && npm install && npm run dev` → `http://localhost:5173`
 **Both:** `make pitch-demo` (`:8000` + `:5173` via `Vite proxy /api → 8000`)
 
+**Azure Hybrid (frontend on Azure, inference on HF ZeroGPU — stays free 12mo):**
+```bash
+# One-time: set HF Space URL for prod (local dev keeps VITE_API_BASE="")
+echo "VITE_API_BASE=https://imadityasarkar-satquery-ai.hf.space" > frontend/.env
+npm --prefix frontend run build  # → frontend/dist
+# Deploy dist to Azure Static Web Apps Free (GitHub Actions auto-created on `Create Static Web App`)
+# Portal → Static Web App → Free → App location: mvp/frontend, Output: dist, Build preset: Vite
+# Config already in mvp/frontend/staticwebapp.config.json (SWA SPA fallback + cache)
+# Health now hits HF: curl $VITE_API_BASE/api/health
+```
+
 Checks:
 
 ```bash
