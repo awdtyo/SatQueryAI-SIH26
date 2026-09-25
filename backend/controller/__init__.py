@@ -295,6 +295,26 @@ def _resolve_location_to_images(
 
 # --- Orchestration ---
 
+def _grounding_params(result: dict[str, Any]) -> dict[str, Any]:
+    """Grounded coverage + coarse spatial context surfaced in ExecutionTrace.parameters.
+
+    Additive only — every pre-existing trace field is preserved. Values come from
+    the specialist (VQA) and are passed through verbatim; only JSON-serializable
+    shapes are accepted.
+    """
+    out: dict[str, Any] = {}
+    coverage = result.get("_coverage_percentages")
+    if isinstance(coverage, dict):
+        out["coverage_percentages"] = {str(k): float(v) for k, v in coverage.items()}
+    grid = result.get("_spatial_grid")
+    if isinstance(grid, list):
+        out["spatial_grid"] = grid
+    method = result.get("_spatial_method")
+    if isinstance(method, str) and method:
+        out["spatial_method"] = method
+    return out
+
+
 def handle(
     query: str,
     images: list[Any],
@@ -422,6 +442,7 @@ def handle(
             "band_subset": "RGB",  # placeholder — real pipeline would report actual bands
             "spatial_resolution_m": 10,
             **loc_params,
+            **_grounding_params(result),
         },
         confidence=confidence,
         evidence_refs=evidence_refs,

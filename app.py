@@ -247,7 +247,7 @@ def _b64_to_pil(b64_str: str) -> Image.Image | None:
         return None
 
 
-@spaces.GPU(duration=60)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
+@spaces.GPU(duration=15)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
 def predict(
     query: str,
     input_mode: str,
@@ -642,8 +642,10 @@ with gr.Blocks(
     )
 
 # Required for @spaces.GPU scheduling — without queue the GPU worker never drains and UI hangs
-demo.queue(max_size=20)
-
+demo.queue(
+    max_size=20,
+    default_concurrency_limit=1,
+)
 # Optional unified FastAPI + Gradio (Docker / local CPU combined mode).
 # OPT-IN via SATQUERY_MOUNT_FASTAPI=1 (Dockerfile sets it); default OFF because
 # mount_gradio_app mutates `demo` (custom_mount_path, config snapshot) before

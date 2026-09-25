@@ -53,6 +53,25 @@ _NO_REPEAT_NGRAM_SIZE = app_config.NO_REPEAT_NGRAM_SIZE
 _SYSTEM_PROMPT = app_config.SYSTEM_PROMPT
 _DETAIL_SUFFIX = app_config.DETAIL_SUFFIX
 
+# Coarse 3x3 spatial heuristic only; this is not pixel-precise grounding.
+GRID_LABELS: dict[tuple[int, int], str] = {
+    (0, 0): "northwest",
+    (0, 1): "north",
+    (0, 2): "northeast",
+    (1, 0): "west",
+    (1, 1): "center",
+    (1, 2): "east",
+    (2, 0): "southwest",
+    (2, 1): "south",
+    (2, 2): "southeast",
+}
+
+# Recorded verbatim in the execution trace — do not rename.
+SPATIAL_METHOD = "coarse_3x3_grid_heuristic"
+
+# Minimum share of a grid cell a class must hold to count as spatial evidence.
+_GRID_MIN_CELL_SHARE = 0.40
+
 
 def _get_compute_dtype():  # type: ignore[no-untyped-def]
     """T4 (sm_75) is fp16-optimal; bf16 is emulated/slow. Always use fp16 for inference unless A100+."""
@@ -296,6 +315,101 @@ def _coerce_images(images: Any) -> list[Image.Image]:
     raise ValueError(f"Unsupported images type: {type(images)}")
 
 
+def _compute_grounding(
+    image: Image.Image,
+) -> tuple[list[dict[str, Any]], dict[str, float], list[dict[str, Any]]]:
+    """Compute class coverage + coarse 3x3 grid ONCE per request.
+
+    backend.utils.chart is the single source of truth: the same pixel classifier
+    produces the chart percentages, the coverage dict fed into the VQA prompt,
+    and the spatial grid recorded in the execution trace.
+
+    Returns (chart, coverage_percentages, spatial_grid) — all JSON serializable.
+    """
+    chart: list[dict[str, Any]] = []
+    coverage: dict[str, float] = {}
+    grid: list[dict[str, Any]] = []
+
+    if getattr(app_config, "CHART_ENABLED", True):
+        try:
+            from backend.utils.chart import compute_chart, compute_grid  # type: ignore
+
+            source = getattr(app_config, "CHART_SOURCE", "heuristic")
+            if source in ("heuristic", "auto"):
+                chart = compute_chart(image)
+                # Fallback if heuristic fails (uniform image) — placeholder, not grounded
+                if not chart:
+                    chart = [{"label": "coverage", "value": 100.0}]
+                # Grounded coverage = measured class labels only (never the placeholder)
+                grounded = [e for e in chart if isinstance(e, dict) and str(e.get("label", "")) != "coverage"]
+                coverage = {str(e["label"]): float(e["value"]) for e in grounded}
+                if coverage:
+                    try:
+                        grid = [
+                            {
+                                "feature": str(cell["label"]),
+                                "location": GRID_LABELS[(int(cell["row"]), int(cell["col"]))],
+                                "row": int(cell["row"]),
+                                "col": int(cell["col"]),
+                                "cell_percent": float(cell["cell_percent"]),
+                                "image_percent": float(cell["image_percent"]),
+                            }
+                            for cell in compute_grid(image, min_cell_share=_GRID_MIN_CELL_SHARE)
+                            if (int(cell["row"]), int(cell["col"])) in GRID_LABELS
+                        ]
+                    except Exception as e:
+                        logger.warning("Coarse 3x3 grid failed: %s", e)
+                        grid = []
+            else:
+                chart = []
+        except Exception as e:
+            logger.warning("Heuristic chart failed: %s", e)
+            chart = [{"label": "coverage", "value": 100.0}]
+    else:
+        chart = []
+
+    return chart, coverage, grid
+
+
+def _grounding_context(coverage: dict[str, float], grid: list[dict[str, Any]]) -> str:
+    """Prompt block carrying measured coverage percentages + coarse grid evidence.
+
+    Percentages come straight from the chart computation — never invented here.
+    If no grounded percentage is available the model is told to state none.
+    """
+    lines = ["", "[Grounded evidence — measured from pixels, not estimated by you]"]
+    lines.append("Class coverage (percent of image area):")
+    if coverage:
+        lines.extend(f"- {label}: {value:.1f}%" for label, value in coverage.items())
+    else:
+        lines.append("- none available for this image")
+
+    lines.append("Coarse 3x3 spatial grid (heuristic — coarse locations only):")
+    if grid:
+        per_feature: dict[str, list[str]] = {}
+        for cell in grid:
+            per_feature.setdefault(str(cell["feature"]), []).append(str(cell["location"]))
+        lines.extend(f"- {feat}: {', '.join(locs)}" for feat, locs in per_feature.items())
+    else:
+        lines.append("- no reliable spatial evidence for this image")
+
+    lines.extend(
+        [
+            "Instructions for using this evidence:",
+            "- For each feature you describe, include its approximate area coverage using the "
+            "provided percentage. Do not invent, recompute, or guess a percentage. Use only the "
+            "grounded percentage supplied in the context.",
+            "- If no grounded percentage is supplied for a feature, do not state a percentage for it.",
+            "- Mention a spatial location only when it is supported by the supplied grid evidence "
+            "above. These are coarse 3x3 grid cells only — not pixel-precise grounding; do not "
+            "claim finer precision than a quadrant.",
+            '- Style: "<Feature> is concentrated in the <location> quadrant, covering '
+            'approximately <grounded percentage>% of the image."',
+        ]
+    )
+    return "\n" + "\n".join(lines)
+
+
 def predict(
     images: Any,
     query: str,
@@ -327,12 +441,18 @@ def predict(
 
     image = pil_images[0]
 
+    # Grounded coverage + coarse spatial grid — measured once from pixels, reused by
+    # the chart output, the grounding context below, and the execution trace.
+    chart, coverage_percentages, spatial_grid = _compute_grounding(image)
+
     # Build Qwen2-VL chat messages — detailed analyst persona via system prompt
     # Task-aware: grounding/change keep concise, vqa/captioning gets detailed suffix
     q_text = query.strip()
     # Append detail suffix for very short generic queries to elicit percentages/locations
     if len(q_text.split()) <= 6 and task in ("vqa", "captioning", "visual_question_answering"):
         q_text = q_text + _DETAIL_SUFFIX
+    # Grounded coverage percentages + coarse 3x3 spatial evidence for the model
+    q_text = q_text + _grounding_context(coverage_percentages, spatial_grid)
     messages: list[dict[str, Any]] = []
     if _SYSTEM_PROMPT:
         messages.append({"role": "system", "content": [{"type": "text", "text": _SYSTEM_PROMPT}]})
@@ -529,26 +649,6 @@ def predict(
         if bullets:
             answer = "\n".join(f"- {b}" for b in bullets)
 
-    # Heuristic chart — measured from pixels, not LLM hallucinated
-    chart: list[dict[str, Any]] = []
-    if getattr(app_config, "CHART_ENABLED", True):
-        try:
-            from backend.utils.chart import compute_chart  # type: ignore
-
-            source = getattr(app_config, "CHART_SOURCE", "heuristic")
-            if source in ("heuristic", "auto"):
-                chart = compute_chart(image)
-            else:
-                chart = []
-            # Fallback if heuristic fails (uniform image)
-            if not chart:
-                chart = [{"label": "coverage", "value": 100.0}]
-        except Exception as e:
-            logger.warning("Heuristic chart failed: %s", e)
-            chart = [{"label": "coverage", "value": 100.0}]
-    else:
-        chart = []
-
     # Minimal evidence for stage 1 — echo input
     evidence = [
         {
@@ -568,6 +668,10 @@ def predict(
         "_structured": {"bullets": bullets, "chart": chart, "chart_type": "distribution"},
         "_chart": chart,
         "_chart_type": "distribution",
+        # Grounded coverage + coarse spatial context for the execution trace
+        "_coverage_percentages": coverage_percentages,
+        "_spatial_grid": spatial_grid,
+        "_spatial_method": SPATIAL_METHOD,
     }
 
 
