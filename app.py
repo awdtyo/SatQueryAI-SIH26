@@ -402,6 +402,11 @@ def predict(
         chart_type_data = "distribution"
 
     chart_state = {"data": chart_data, "type": chart_type_data}
+    # Echo chart into the trace: gr.State outputs serialize as null outside a
+    # live Gradio session, so API clients (/gradio_api/call/predict) rebuild the
+    # results chart from these keys (same convention as _gradio_wall_ms above).
+    trace_dict["_chart"] = chart_data
+    trace_dict["_chart_type"] = chart_type_data
 
     # Build fetched gallery for location mode (show Sentinel-2 preview in viewer)
     fetched_gallery: list[Any] | None = None
@@ -638,6 +643,33 @@ with gr.Blocks(
 
 # Required for @spaces.GPU scheduling — without queue the GPU worker never drains and UI hangs
 demo.queue(max_size=20)
+
+# Optional unified FastAPI + Gradio (Docker / local CPU combined mode).
+# OPT-IN via SATQUERY_MOUNT_FASTAPI=1 (Dockerfile sets it); default OFF because
+# mount_gradio_app mutates `demo` (custom_mount_path, config snapshot) before
+# launch — unsafe for the HF Gradio SDK Space, which must serve the Blocks app
+# unchanged. New Space runs `python app.py` → demo.queue + demo.launch only, and
+# the Vercel frontend calls that Gradio queue (/gradio_api/call/predict), never
+# the FastAPI /api path. Both modes use the SAME pipeline (controller → registry
+# → ZeroGPU); no duplicate inference, no backend code duplicated.
+if os.getenv("SATQUERY_MOUNT_FASTAPI", "0") == "1":
+    try:
+        from backend.main import app as fastapi_app  # type: ignore
+
+        # Mount Gradio demo onto FastAPI so /api/* (FastAPI) and /gradio (Gradio UI) share one port
+        # HF Docker Spaces can then run `uvicorn app:app --host 0.0.0.0 --port 7860`
+        if hasattr(gr, "mount_gradio_app"):
+            app = gr.mount_gradio_app(fastapi_app, demo, path="/gradio")  # type: ignore
+            logger.info("Unified app created: FastAPI + Gradio mounted at /gradio (Docker/local)")
+        else:
+            app = fastapi_app
+            logger.info("Unified app: gr.mount_gradio_app not available, exposing FastAPI only")
+    except Exception as e:
+        logger.debug(f"Unified app mount skipped (SATQUERY_MOUNT_FASTAPI=1 but mount failed): {e}")
+        app = None  # type: ignore
+else:
+    logger.info("SATQUERY_MOUNT_FASTAPI unset — Gradio-only mode (demo.queue + demo.launch)")
+    app = None  # type: ignore  # only defined for `uvicorn app:app` combined mode
 
 if __name__ == "__main__":
     # HF Spaces injects GRADIO_SERVER_NAME/PORT; locally default 7860 for parity with Docker PORT

@@ -1,6 +1,7 @@
-# HF Spaces — Docker SDK (CPU-only, i5/16GB friendly)
+# Local/CPU + optional Docker-space artifact (CPU-only, i5/16GB friendly)
 # Multi-stage: 1) build frontend (node), 2) runtime (python + frontend dist + FastAPI)
-# HF Spaces expects app_port 7860; locally you can still use 8000 via PORT env
+# NOT used by the HF Gradio SDK Space (ZeroGPU) — that runs `python app.py` directly.
+# HF Docker Spaces expect app_port 7860; locally you can still use 8000 via PORT env
 # See docs/hf_spaces.md for push instructions
 
 # ── Stage 1: Frontend build (Vite) ──
@@ -20,6 +21,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HF_HOME=/tmp/hf_cache \
     TRANSFORMERS_CACHE=/tmp/hf_cache \
     SATQUERY_FORCE_CPU=0 \
+    SATQUERY_MOUNT_FASTAPI=1 \
     PORT=7860
 
 WORKDIR /app
@@ -39,11 +41,12 @@ RUN pip install --no-cache-dir --upgrade pip \
   && pip install --no-cache-dir -r requirements.txt \
   && pip install --no-cache-dir huggingface_hub  # for HF_TOKEN auth if gated
 
-# Copy backend + configs + docs (no need for training notebooks at runtime)
+# Copy backend + configs + docs + Gradio entry (combined mode: Gradio at /gradio + FastAPI at /api)
 COPY backend/ ./backend/
 COPY training/configs/ ./training/configs/
 COPY docs/ ./docs/
 COPY README.md ./
+COPY app.py ./app.py
 
 # Copy built frontend
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
@@ -62,8 +65,16 @@ USER user
 
 EXPOSE 7860
 
-# Healthcheck hits FastAPI /health (not /api/health) for Spaces load balancer
+# Healthcheck hits FastAPI /health (lightweight, no model load) for Spaces load balancer
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -sf http://localhost:7860/health || exit 1
 
-CMD ["sh", "-c", "uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860}"]
+# Local CPU / Docker combined mode: SATQUERY_MOUNT_FASTAPI=1 (set above) makes
+# app.py mount the Gradio demo at /gradio onto FastAPI:
+#   /api/* + /health  → FastAPI (local dev target for the React console)
+#   /gradio           → Gradio UI (demo/backup in the same container)
+# Both share the same SatQuery pipeline (controller → registry → ZeroGPU).
+# The HF Gradio SDK Space (ZeroGPU) does NOT use this Dockerfile or the mount —
+# it runs `python app.py` with the mount left disabled (default OFF).
+# Local dev is unchanged: `uvicorn backend.main:app --port 8000` still works.
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT:-7860}"]

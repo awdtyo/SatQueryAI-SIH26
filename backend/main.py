@@ -93,11 +93,49 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS for frontend dev (vite on :5173)
+# Structured error envelope — do not leak stack traces / paths / tokens to frontend
+# Frontend expects {detail} for 4xx, but new API also returns {status:"error", error:{code,message}} for Vercel client
+from fastapi import Request, HTTPException as FastAPIHTTPException
+from fastapi.responses import JSONResponse
+
+
+@app.exception_handler(FastAPIHTTPException)
+async def _http_exception_handler(request: Request, exc: FastAPIHTTPException):
+    # Log full detail server-side, return sanitized to client
+    logger.warning(f"HTTP {exc.status_code} at {request.url.path}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "error": {"code": f"HTTP_{exc.status_code}", "message": str(exc.detail)},
+            "detail": str(exc.detail),  # backward compat for existing frontend mockClient parsing detail
+        },
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception):
+    logger.exception(f"Unhandled error at {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "error": {"code": "INTERNAL_ERROR", "message": "Internal server error"},
+        },
+    )
+
+# CORS for Vercel frontend → HF Space API
+# Configured via CORS_ORIGINS env (comma-separated). Default ["*"] for backward compat.
+# New deployment should set: CORS_ORIGINS=http://localhost:5173,https://satquery.vercel.app
+_cors_origins = getattr(config, "CORS_ORIGINS", ["*"])
+# Browsers reject allow_credentials=True with allow_origins=["*"]; only send
+# credentials when explicit origins are configured.
+_cors_allow_credentials = not (_cors_origins == ["*"])
+# HF healthcheck and Gradio also need to allow all during local dev; tighten in prod via env
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # tighten in prod
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_allow_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -111,6 +149,62 @@ if not _FRONTEND_DIST.exists():
         _FRONTEND_DIST = _ALT
 
 _HAS_FRONTEND = _FRONTEND_DIST.exists() and (_FRONTEND_DIST / "index.html").exists()
+
+# Lightweight health for HF Space healthcheck — does NOT trigger model loading (ZeroGPU)
+# NOTE: this is intentionally lightweight/deferred. For loaded is_real status use
+# GET /api/health (which may cold-pull ~4GB on first call). The "specialists" map
+# below reports cached load flags WITHOUT forcing a load, so "deferred" means
+# "not yet loaded in this process", not "stub".
+def _cheap_specialist_flag(module_name: str) -> str:
+    """Return 'ready' / 'deferred' / 'error' without triggering model download."""
+    try:
+        import importlib
+
+        mod = importlib.import_module(module_name)
+        if getattr(mod, "_load_attempted", False):
+            return "ready" if getattr(mod, "_is_real", False) else "error"
+        return "deferred"
+    except Exception:
+        return "deferred"
+
+
+@app.get("/health", tags=["health"], include_in_schema=False)
+def _lightweight_health():
+    return {
+        "status": "ok",
+        "mode": "lightweight",
+        "note": "Deferred flags only — use /api/health for loaded is_real status (may cold-pull model).",
+        "specialists": {
+            "vqa": _cheap_specialist_flag("backend.models.vqa"),
+            "change_detection": _cheap_specialist_flag("backend.models.change"),
+            "optical_sar_fusion": _cheap_specialist_flag("backend.models.fusion"),
+            "yolo": _cheap_specialist_flag("backend.models.yolo"),
+        },
+        "base_model": config.BASE_MODEL,
+        "adapter_path": config.ADAPTER_PATH,
+        "cuda_available": False,
+        "force_cpu": bool(getattr(config, "FORCE_CPU", False)),
+        "compute": "cpu",
+        "device": "cpu",
+    }
+
+# Capabilities endpoint for Vercel frontend — static registration map (no model load)
+# Must NOT call registry.health()/get_model_info() here: those lazily _load_model()
+# (cold-pull ~4GB) on first call. Use /api/health when loaded is_real is needed.
+@app.get("/api/capabilities", tags=["capabilities"])
+def capabilities() -> dict:
+    # Registered (not loaded) capabilities — mirrors registry._REGISTRY keys + config.
+    # "grounding" stays False (stub, no adapter yet). Spectral/live/viz need no weights.
+    return {
+        "vqa": True,  # registry: vqa/captioning → vqa_specialist (Qwen2-VL-2B + phase2-vrsbench)
+        "object_detection": True,  # registry: count/counting → yolo_specialist (yolov8n.pt)
+        "spectral_indices": True,  # spectral agent always available (no model weight)
+        "change_detection": True,  # registry: change_detection/change/cdvqa → change_specialist
+        "live_satellite": True,  # Planetary Computer + Nominatim
+        "visualizations": True,  # chart + Gallery
+        "grounding": False,  # stub (backend/models/grounding.py)
+        "fusion": True,  # registry: optical_sar_fusion/fusion/sar → fusion_specialist
+    }
 
 # Mount order matters: frontend "/" must be registered before root api_router's "/" so "/" serves SPA when dist exists
 app.include_router(api_router, prefix="/api")

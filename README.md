@@ -146,7 +146,7 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 | **Adapters** | `Qwen/Qwen2-VL-2B-Instruct` + LoRA `r=16 α=32` (stage-1 → stage-2 → stage-3 chain) | Via `backend/config.py:18` `BASE_MODEL` / `ADAPTER_PATH` / `CHANGE_ADAPTER_PATH` / `FUSION_ADAPTER_PATH` |
 | **Counting** | **Ultralytics ≥8.2** (`yolov8n.pt`), **OpenCV ≥4.8** | `backend/models/yolo.py:1`, configurable via `SATQUERY_YOLO_*` |
 | **Charts / Vision** | **Pillow ≥10**, `numpy<2`, `torchvision ≥0.18`, `matplotlib ≥3.5`, `rasterio` (optional) | `Pillow` for `RGB` conversion, `rasterio` for `.tif` bands, `matplotlib` for Gradio plots |
-| **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, Vite proxy `/api → 8000`, poll `/api/health` every 15s |
+| **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, local Vite proxy `/api → 8000`, prod Gradio queue `/gradio_api/call/*`, poll health every 15s |
 | **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=60)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0` |
 | **Training env** | **Google Colab T4** (15GB, sm_75, fp16), fallback Kaggle T4×2 | Free-tier safe: Drive checkpoints, subset caching |
 | **Testing** | `pytest`, `httpx`, `ruff`, `mypy` | `tests/test_controller_api.py`, `tests/test_registry.py`, `tests/test_vqa_wrapper.py` |
@@ -516,16 +516,45 @@ SATQUERY_TASK_OVERRIDES=                # e.g. "vqa:custom_vqa,grounding:my_grou
 **Frontend:** `cd frontend && npm install && npm run dev` → `http://localhost:5173`
 **Both:** `make pitch-demo` (`:8000` + `:5173` via `Vite proxy /api → 8000`)
 
-**Azure Hybrid (frontend on Azure, inference on HF ZeroGPU — stays free 12mo):**
-```bash
-# One-time: set HF Space URL for prod (local dev keeps VITE_API_BASE="")
-echo "VITE_API_BASE=https://imadityasarkar-satquery-ai.hf.space" > frontend/.env
-npm --prefix frontend run build  # → frontend/dist
-# Deploy dist to Azure Static Web Apps Free (GitHub Actions auto-created on `Create Static Web App`)
-# Portal → Static Web App → Free → App location: mvp/frontend, Output: dist, Build preset: Vite
-# Config already in mvp/frontend/staticwebapp.config.json (SWA SPA fallback + cache)
-# Health now hits HF: curl $VITE_API_BASE/api/health
+**Two-deployment architecture:**
+
+```text
+Vercel (React console)             HF Space — Gradio SDK, zero-a10g (NEW: satquery-backend)
+React + Vite  ──HTTPS──────────►  POST /gradio_api/upload          (FileData per image)
+VITE_API_BASE_URL                    POST /gradio_api/call/predict → Gradio queue
+                                     GET  /gradio_api/call/predict/{event_id}  (SSE → outputs)
+                                     → @spaces.GPU predict → controller → registry → ZeroGPU
 ```
+
+* Frontend (Vercel, no inference): Root Directory `frontend`, build `npm install && npm run build`,
+  output `dist/`, SPA fallback `frontend/vercel.json`. Public var
+  `VITE_API_BASE_URL` = local `http://localhost:8000` (FastAPI transport, Vite proxy also works with
+  an empty value), prod `https://YOUR_HF_USERNAME-satquery-backend.hf.space` (Gradio queue transport).
+  Transport auto-detects from the base URL (empty/localhost → FastAPI, anything else → Gradio);
+  override with `VITE_API_TRANSPORT=gradio|fastapi`. Every submission opens a fresh queue job
+  (`event_id` never reused). Never put `HF_TOKEN` / secrets in `VITE_*`.
+* Backend (NEW HF Space, Gradio SDK — required for ZeroGPU): README frontmatter
+  `sdk: gradio`, `app_file: app.py`, `hardware: zero-a10g`; `python app.py` → `demo.queue(max_size=20)`
+  + `demo.launch`. The client contract (derived from Gradio 5.16.1, no hardcoded guesses):
+  `POST /gradio_api/upload` (multipart `files`) → `{path, orig_name, meta: {_type: "gradio.FileData"}}`
+  → `POST /gradio_api/call/predict` with `{"data": [query, input_mode, image_a, image_b,
+  location_query, location_query_2]}` (event name `predict` = first `fn=predict` registration in
+  `app.py`, auto-named by Gradio) → `GET /gradio_api/call/predict/{event_id}` streams SSE frames
+  `event: heartbeat|complete|error`; `complete` carries the 6-slot output array
+  `[answer, confidence, trace, evidence_md, chart_state(null), gallery]`. The console rebuilds
+  `QueryResponse` from it (`evidence ← trace.evidence_refs`, chart ← `trace._chart`,
+  previews ← gallery). `POST` JSON triggers a CORS preflight that Gradio's
+  `CustomCORSMiddleware` answers for any non-localhost origin — no server config needed.
+  Secrets (`HF_TOKEN`, CDSE) stay as Space Variables.
+* Combined FastAPI+Gradio (`uvicorn app:app`) is now **opt-in**: `SATQUERY_MOUNT_FASTAPI=1`
+  (the Dockerfile sets it for local/CPU Docker; the Gradio SDK Space leaves it unset so
+  `mount_gradio_app` never mutates the Blocks app). `backend/main.py` and `/api/*` remain the
+  local-dev FastAPI path only — the Vercel frontend does not call them in production.
+* Push list for the new Space: `README.md`, `app.py`, `requirements.txt`, `backend/`, `docs/`,
+  optional `.gitignore` (+ `assets/` if present). Do NOT push `Dockerfile`, `frontend/`,
+  `training/`, `tests/`, `data/`, `.env`.
+* EXISTING HF Space (`imadityasarkar/satquery-ai`) remains a separate backup/demo Gradio +
+  ZeroGPU deployment — DO NOT modify, migrate, or replace it as part of this work.
 
 Checks:
 

@@ -155,6 +155,21 @@ SATQUERY_NOMINATIM_ENDPOINT: str = os.getenv(
     "https://nominatim.openstreetmap.org/search",
 )
 
+# --- CORS (Vercel frontend → HF Space API) ---
+# Comma-separated origins. Supports http://localhost:5173 for dev and Vercel prod domain.
+# Example: CORS_ORIGINS=http://localhost:5173,https://satquery.vercel.app
+# Default "" means allow all for backward compat (existing Space), but new Space should set explicit origins.
+_CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "")
+if _CORS_ORIGINS_RAW.strip():
+    CORS_ORIGINS: list[str] = [o.strip() for o in _CORS_ORIGINS_RAW.split(",") if o.strip()]
+else:
+    # Backward compat: allow all (existing behavior). For new deployment, set CORS_ORIGINS explicitly.
+    CORS_ORIGINS = ["*"]
+
+# Frontend API base URL is configured in Vercel/Vite, not here — backend never reads VITE_*.
+# Vercel public var: VITE_API_BASE_URL (e.g. https://imadityasarkar-satquery-backend.hf.space)
+# Local dev: VITE_API_BASE_URL=http://localhost:8000
+
 # For env-based override of the task map (comma-separated "task:model" pairs)
 # e.g. TASK_OVERRIDES="vqa:custom_vqa,grounding:my_grounding"
 _task_overrides_raw = os.getenv("SATQUERY_TASK_OVERRIDES", "")
