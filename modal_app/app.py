@@ -67,7 +67,7 @@ if USE_HF_TOKEN_SECRET:
 
 # GPU: A10G (24GB) mirrors the HF ZeroGPU a10g target and fits Qwen2-VL-2B in
 # 4-bit with room for the processor KV cache. Override by editing here only.
-_GPU = "T4"
+_GPU = "A10G"
 
 
 @app.cls(

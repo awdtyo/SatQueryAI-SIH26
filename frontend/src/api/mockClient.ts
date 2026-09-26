@@ -13,14 +13,10 @@ import type {
  *
  * - fastapi (local dev): FormData POST to /api/query on backend/main.py —
  *   VITE_API_BASE_URL empty (Vite proxy /api) or http://localhost:8000.
- * - gradio (production): Vercel same-origin proxy /api/gradio/* → Space
- *   /gradio_api/* (frontend/api/gradio/[...path].ts). Images are uploaded via
- *   POST /api/gradio/upload (FileData), then a FRESH queue job per submission:
- *   POST /api/gradio/call/predict  →  GET /api/gradio/call/predict/{event_id}
- *   (SSE: heartbeat* → complete | error). The proxy attaches
- *   `Authorization: Bearer $HF_TOKEN` server-side (ZeroGPU own-quota auth);
- *   localhost dev (no proxy function under `vite dev`) calls the Space's
- *   /gradio_api/* directly instead.
+ * - gradio (production): HF Gradio SDK Space (ZeroGPU). Images are uploaded via
+ *   POST /gradio_api/upload (FileData), then a FRESH queue job per submission:
+ *   POST /gradio_api/call/predict  →  GET /gradio_api/call/predict/{event_id}
+ *   (SSE: heartbeat* → complete | error).
  *
  * Transport auto-detect: empty/localhost base → fastapi, any other host →
  * gradio; override with VITE_API_TRANSPORT=gradio|fastapi.
@@ -58,17 +54,6 @@ function resolveTransport(): Transport {
 }
 
 function gradioBase(): string {
-  // Production (Vercel, non-localhost page): same-origin serverless proxy
-  // /api/gradio → Space /gradio_api. The proxy (frontend/api/gradio/[...path].ts)
-  // holds HF_TOKEN server-side and attaches `Authorization: Bearer` so ZeroGPU
-  // attributes usage to our own quota, not the anonymous pool (which 429s).
-  // The browser bundle NEVER sees the token — do not add auth headers here.
-  if (typeof window !== "undefined") {
-    const host = window.location.hostname;
-    if (host !== "localhost" && host !== "127.0.0.1" && host !== "0.0.0.0") {
-      return "/api/gradio";
-    }
-  }
   if (!API_BASE) {
     throw new Error(
       "Gradio transport requires VITE_API_BASE_URL pointing at the HF Space (set it in Vercel)",
