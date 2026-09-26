@@ -520,16 +520,25 @@ SATQUERY_TASK_OVERRIDES=                # e.g. "vqa:custom_vqa,grounding:my_grou
 
 ```text
 Vercel (React console)             HF Space — Gradio SDK, zero-a10g (NEW: satquery-backend)
-React + Vite  ──HTTPS──────────►  POST /gradio_api/upload          (FileData per image)
-VITE_API_BASE_URL                    POST /gradio_api/call/predict → Gradio queue
-                                     GET  /gradio_api/call/predict/{event_id}  (SSE → outputs)
-                                     → @spaces.GPU predict → controller → registry → ZeroGPU
+React + Vite  ──HTTPS──────────►  same-origin /api/gradio/* (serverless proxy)
+VITE_API_BASE_URL                   │ attaches Authorization: Bearer $HF_TOKEN server-side
+                                    ▼
+                                   POST /gradio_api/upload          (FileData per image)
+                                   POST /gradio_api/call/predict → Gradio queue
+                                   GET  /gradio_api/call/predict/{event_id}  (SSE → outputs)
+                                   → @spaces.GPU predict → controller → registry → ZeroGPU
 ```
 
 * Frontend (Vercel, no inference): Root Directory `frontend`, build `npm install && npm run build`,
-  output `dist/`, SPA fallback `frontend/vercel.json`. Public var
-  `VITE_API_BASE_URL` = local `http://localhost:8000` (FastAPI transport, Vite proxy also works with
-  an empty value), prod `https://YOUR_HF_USERNAME-satquery-backend.hf.space` (Gradio queue transport).
+  output `dist/`, SPA fallback `frontend/vercel.json` (excludes `/api/*` so the proxy function runs).
+  The browser NEVER calls the Space directly and never sees `HF_TOKEN`: all Gradio queue calls go
+  through the same-origin proxy `frontend/api/gradio/[...path].ts`, which forwards to the Space with
+  `Authorization: Bearer $HF_TOKEN` so ZeroGPU bills the account's own quota (anonymous calls 429).
+  Vercel Project → Settings → Environment Variables: public `VITE_API_BASE_URL` =
+  local `http://localhost:8000` (FastAPI transport, Vite proxy also works with
+  an empty value), prod `https://YOUR_HF_USERNAME-satquery-backend.hf.space` (selects the Gradio
+  transport); server-side-only `SATQUERY_SPACE_URL` (= same Space URL, NOT `VITE_*`) and `HF_TOKEN`
+  (`hf_...`, all environments — never commit the real value).
   Transport auto-detects from the base URL (empty/localhost → FastAPI, anything else → Gradio);
   override with `VITE_API_TRANSPORT=gradio|fastapi`. Every submission opens a fresh queue job
   (`event_id` never reused). Never put `HF_TOKEN` / secrets in `VITE_*`.
