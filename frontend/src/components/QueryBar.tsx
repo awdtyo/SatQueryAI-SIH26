@@ -1,10 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 
 interface Props {
-  onSubmit: (query: string) => void;
+  onRun?: (query: string) => void;
+  onSubmit?: (query: string) => void;
   disabled: boolean;
 }
-
 const SUGGESTIONS = [
   "What changed between these two dates?",
   "Describe the land cover in this image",
@@ -14,18 +14,18 @@ const SUGGESTIONS = [
   "Compare vegetation indices between T1 and T2",
 ];
 
-export default function QueryBar({ onSubmit, disabled }: Props) {
+export default function QueryBar({ onRun, onSubmit, disabled }: Props) {
   const [value, setValue] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+ const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleSubmit = useCallback(() => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
-    onSubmit(trimmed);
+    (onRun ?? onSubmit)?.(trimmed);
     setValue("");
     setShowSuggestions(false);
-  }, [value, disabled, onSubmit]);
+ }, [value, disabled, onRun, onSubmit]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

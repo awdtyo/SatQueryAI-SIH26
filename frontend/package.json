@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "audit": "node --experimental-strip-types audit/continuity.audit.ts && node --experimental-strip-types audit/clock.audit.ts",
+    "verify": "npm run lint && npm run audit && npm run build"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -12,12 +12,25 @@ export interface UploadedImage {
   role?: "optical" | "sar" | "t1" | "t2";
 }
 
-/** Query request sent to the backend */
+/** Query request sent to the backend — images OR location (Nominatim + Planetary Computer) */
 export interface QueryRequest {
   query: string;
   input_mode: InputMode;
   images: File[];
+  // Alternative to images — resolved server-side via geocode + STAC
+  location_query?: string;
+  location_query_2?: string;
+  coordinates?: { lat: number; lon: number };
+  coordinates_2?: { lat: number; lon: number };
 }
+
+/**
+ * Real transport-level progress signals observed by the client.
+ * Emitted only when the transport can genuinely observe the state — Gradio SSE
+ * frames for `queued`/`generating`/`responding`, request lifecycle for
+ * `dispatching`. Never used to imply a backend stage completed.
+ */
+export type QueryActivity = "dispatching" | "queued" | "generating" | "responding";
 
 /** Execution trace — graded deliverable per problem statement */
 export interface ExecutionTrace {
@@ -35,20 +48,39 @@ export interface ModelTraceEntry {
   role: string;
   parameters: Record<string, string | number | boolean>;
   latency_ms: number;
+  is_real?: boolean;
+  is_stub?: boolean;
 }
 
-/** Reference to evidence (bbox, overlay, etc.) */
+/** Reference to evidence (bbox, overlay, etc.) — mirrors backend/schemas EvidenceRef */
 export interface EvidenceRef {
-  type: "bounding_box" | "overlay" | "heatmap" | "saliency";
+  type: "bounding_box" | "overlay" | "heatmap" | "saliency" | "image_ref";
   description: string;
   coordinates?: number[][];
   image_index?: number;
 }
 
-/** A land-cover class share, used for the donut breakdown chart */
-export interface LandCoverSlice {
+/** Structured bullets/chart from backend (bullets replace paragraph) */
+export interface ChartEntry {
   label: string;
   value: number;
+}
+export type ChartType = "distribution" | "count" | "change" | "none";
+export interface StructuredOutput {
+  bullets: string[];
+  chart: ChartEntry[];
+  chart_type?: ChartType | null;
+  summary?: string;
+}
+
+export interface ResolvedImagePreview {
+  display_name?: string;
+  lat?: number;
+  lon?: number;
+  scene_id?: string;
+  collection?: string;
+  preview_b64?: string;
+  bbox?: number[];
 }
 
 /** Full query response from the backend */
@@ -57,8 +89,10 @@ export interface QueryResponse {
   confidence: number;
   execution_trace: ExecutionTrace;
   evidence: EvidenceRef[];
-  /** Optional land-cover distribution returned with the answer. */
-  land_cover?: LandCoverSlice[];
+  structured?: StructuredOutput | null;
+  chart?: ChartEntry[] | null;
+  chart_type?: ChartType | null;
+  resolved_images?: ResolvedImagePreview[] | null;
 }
 
 /** Application error shape */
@@ -66,4 +100,15 @@ export interface AppError {
   message: string;
   code?: string;
   details?: string;
+}
+
+/** `GET /api/health` payload (or the Gradio `/info` equivalent) */
+export interface HealthSnapshot {
+  status?: string;
+  compute?: string;
+  device?: string;
+  force_cpu?: boolean;
+  adapter_path?: string;
+  base_model?: string;
+  specialists?: Record<string, unknown>;
 }

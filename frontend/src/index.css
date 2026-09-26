@@ -2,39 +2,294 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
+   MOTION SYSTEM
+   One curve set for the entire experience. The values here are the control
+   points of the JS curves in src/lib/motion.ts, so a transition resolved by the
+   compositor and one resolved on the main thread land on the same value at the
+   same moment Ã¢â‚¬â€ a handoff between the two is invisible.
+   Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */
+:root {
+  /* Deceleration: enters fast, settles long. The default for anything arriving. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Symmetric: elements that travel and arrive from both ends. */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* Anticipation: gathers back before committing. Leading edges only. */
+  --ease-anticipate: cubic-bezier(0.34, 1.4, 0.5, 1);
+  /* Damped settle: slight overshoot, one small correction, then still. */
+  --ease-spring: cubic-bezier(0.22, 1.35, 0.36, 1);
+
+  --dur-fast: 160ms;
+  --dur-base: 260ms;
+  --dur-slow: 420ms;
+}
+
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Boot sequence keyframes Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+   Kept here rather than in the Tailwind theme because each one
+   needs a bespoke per-element delay (see .boot-stagger-*), which
+   cannot be expressed without fighting the `animate-*` shorthand. */
+@keyframes boot-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes boot-sweep {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes boot-orbit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes boot-ping {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+@keyframes boot-scan {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes boot-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Cinematic layer keyframes Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+   All of these are GPU-cheap (transform / opacity only) and are
+   globally disabled by the reduced-motion block at the end of this
+   file, so collapsing them removes movement but never state. */
+
+/* â”€â”€ Continuous loops â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+   Only genuinely continuous motion lives here: rotation, drift, sweep and
+   scan. These never restart, because the elements that own them stay mounted
+   for the whole shot â€” the globe is present behind every beat, and only its
+   opacity and scale change. Anything that *moves between states* is driven by
+   the rAF shot clock instead, so it is a function of app state rather than of
+   wall-clock time. */
+
+@keyframes boot-globe-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes boot-globe-halo {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes boot-globe-scan {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes boot-globe-mass {
+  0%,
+  100% {
+    stroke-opacity: 0.16;
+    fill-opacity: 0.06;
+  }
+  50% {
+    stroke-opacity: 0.34;
+    fill-opacity: 0.13;
+  }
+}
+
+@keyframes boot-globe-point {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes boot-sat-transit {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes boot-imagery-drift {
+  from {
+    transform: scale(1.04);
+  }
+  to {
+    transform: scale(1.12);
+  }
+}
+
+@keyframes boot-imagery-grid {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(0, -32px, 0);
+  }
+}
+
+@keyframes boot-band-tag {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@keyframes analysis-zoom-sweep {
+  0%,
+  100% {
+    transform: translateX(-40%);
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateX(40%);
+    opacity: 0.85;
+  }
+}
+
+/* Live status indicators. These are intentional high-priority signals â€” the
+   dot genuinely means "this is live", so it is allowed to breathe. */
+@keyframes analysis-stage-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+
+@keyframes status-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* In-flight acquisition scan. The container fades out on a transition when the
+   request resolves, so the scan dissolves instead of being yanked. */
+@keyframes imagery-scan {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes imagery-scanline {
+  from {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  10%,
+  90% {
+    opacity: 1;
+  }
+  to {
+    transform: translateY(430%);
+    opacity: 0;
+  }
+}
+
+@keyframes query-bar-scan {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
 @layer base {
   * {
     scrollbar-width: thin;
-    scrollbar-color: #334155 #020617;
+    scrollbar-color: #1e293b #020617;
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
   }
+
   ::-webkit-scrollbar-track {
     background: #020617;
   }
-  ::-webkit-scrollbar-thumb {
-    background: #334155;
-    border-radius: 3px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background: #475569;
-  }
 
-  html {
-    color-scheme: dark;
+  ::-webkit-scrollbar-thumb {
+    background: #1e293b;
+    border-radius: 9999px;
+    border: 2px solid #020617;
   }
 
   body {
-    color: #e2e8f0;
-    background: #020617;
+    @apply bg-slate-950 text-slate-200 antialiased;
   }
 
   ::selection {
-    background: rgba(45, 212, 191, 0.25);
-    color: #ffffff;
+    background: rgba(20, 184, 166, 0.28);
+    color: #f8fafc;
   }
 
   html,
@@ -43,19 +298,26 @@
     height: 100%;
     overflow: hidden;
   }
+
+  /* Guaranteed visible focus for every interactive element. */
+  :focus-visible {
+    outline: 2px solid rgba(45, 212, 191, 0.8);
+    outline-offset: 2px;
+  }
 }
 
 @layer components {
+  /* Ã¢â€â‚¬Ã¢â€â‚¬ Panels Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ */
   .panel {
-    @apply relative rounded-xl border border-slate-800 bg-slate-900;
+    @apply rounded-xl border border-slate-800 bg-slate-900;
   }
 
   .panel-header {
-    @apply flex items-center gap-2.5 rounded-t-xl border-b border-slate-800 bg-slate-900/70 px-4 py-3;
+    @apply flex flex-shrink-0 items-center gap-2.5 border-b border-slate-800/80 px-4 py-3;
   }
 
   .panel-label {
-    @apply text-[11px] font-semibold uppercase tracking-[0.14em] text-teal-400;
+    @apply text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400;
   }
 
   .panel-body {
@@ -63,14 +325,496 @@
   }
 
   .divider {
-    @apply border-t border-slate-800;
+    @apply border-t border-slate-800/80;
   }
 
-  .tag {
-    @apply inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-medium tracking-wider;
+  /* The gate's opacity and transform are written per frame by BootGate from the
+     same clock that drives the morph, so there is deliberately no CSS transition
+     here — a transition would fight the clock and reintroduce the two
+     animations running side by side that this replaced.
+
+     `visibility: hidden` (not just opacity) keeps the pre-boot dashboard out of
+     the tab order and unfocusable, while preserving layout so the imagery panel
+     can be measured before the morph needs it. */
+  .boot-gate {
+    opacity: 0;
+    visibility: hidden;
+  }
+  .boot-gate[data-revealed="true"] {
+    opacity: 1;
+    visibility: visible;
   }
 
-  .tag-muted {
-    @apply tag border-slate-700 bg-slate-800/60 text-slate-400;
+  /* ═══ Boot sequence ═══════════════════════════════════════════════════════
+     Position and opacity for the intro. Every element that *moves between
+     states* is written directly by the rAF shot clock rather than animated
+     here, so nothing restarts on a phase boundary. What remains in CSS is the
+     static treatment of each layer plus the genuinely continuous loops. */
+
+  .boot-root {
+    @apply fixed inset-0 z-[100] overflow-hidden bg-slate-950 text-slate-200;
+    background-image:
+      radial-gradient(ellipse 80% 55% at 50% 42%, rgba(13, 148, 136, 0.09), transparent 70%),
+      radial-gradient(ellipse 120% 80% at 50% 120%, rgba(2, 132, 199, 0.07), transparent 65%);
+  }
+
+  .boot-scanline {
+    background-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(103, 232, 249, 0.04) 50%,
+      transparent 100%
+    );
+    background-size: 100% 4px;
+  }
+
+  .boot-edge {
+    @apply absolute h-px bg-gradient-to-r from-transparent via-teal-400/35 to-transparent;
+  }
+
+  .boot-signal-line {
+    transform-origin: left center;
+  }
+
+  /* Globe internals. Continuous loops; the globe itself is transformed by the
+     clock, so these keep running unchanged across every beat behind it. */
+  .boot-globe-halo {
+    animation: boot-globe-halo 3.4s var(--ease-in-out) infinite;
+  }
+  .boot-globe-spin {
+    transform-origin: 160px 160px;
+    animation: boot-globe-spin 34s linear infinite;
+  }
+  .boot-globe-lat {
+    transform-origin: 160px 160px;
+    animation: boot-globe-scan 22s linear infinite reverse;
+  }
+  .boot-globe-scan {
+    transform-origin: 160px 160px;
+    animation: boot-globe-scan 6s linear infinite;
+  }
+  .boot-globe-mass {
+    animation: boot-globe-mass 5.5s var(--ease-in-out) infinite;
+  }
+  .boot-globe-point {
+    animation: boot-globe-point 2.6s var(--ease-in-out) infinite;
+  }
+  .boot-sat-transit {
+    transform-origin: 160px 160px;
+    animation: boot-sat-transit 7s linear infinite;
+  }
+
+  /* Each glyph is transformed by the clock from a spread, lowered rest state
+     into place. `inline-block` is required for the transform to apply. */
+  .boot-glyph {
+    display: inline-block;
+    transform-origin: 50% 60%;
+  }
+
+  /* The wordmark is the one element the title scales around, so it needs a
+     stable box for the glyph transforms to be measured against. */
+  .boot-wordmark {
+    will-change: transform, opacity;
+  }
+
+  /* Telemetry rows and their leader rules. The rows are revealed by the clock's
+     clip-path on the parent, so these carry no motion of their own — only the
+     dot that marks a live reading, which is a real signal and may breathe. */
+  .boot-telemetry-row {
+    @apply items-baseline;
+  }
+  .boot-telemetry-rule {
+    background-image: linear-gradient(to right, rgb(71 85 105 / 0.55), rgb(71 85 105 / 0.12));
+    background-size: 4px 1px;
+    background-repeat: repeat-x;
+    background-position: 0 center;
+  }
+
+  .boot-imagery-drift {
+    animation: boot-imagery-drift 9s var(--ease-in-out) infinite alternate;
+  }
+  .boot-imagery-grid {
+    background-image:
+      linear-gradient(rgba(103, 232, 249, 0.09) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(103, 232, 249, 0.09) 1px, transparent 1px);
+    background-size: 32px 32px;
+    animation: boot-imagery-grid 3.2s linear infinite;
+  }
+  .boot-band-tag {
+    animation: boot-band-tag 2.4s var(--ease-in-out) infinite;
+  }
+
+  .boot-morph-frame {
+    transform-origin: 50% 50%;
+  }
+
+  /* Texture inside the morphing frame. Purely decorative plate, never a real
+     scene: a soft diagonal wash, one slow scan band, and an edge vignette that
+     keeps the frame from reading as a flat rectangle of colour. All continuous
+     loops, so they continue undisturbed while the frame itself is resized. */
+  .boot-morph-texture {
+    background-image:
+      linear-gradient(115deg, rgba(45, 212, 191, 0.1), transparent 42%),
+      linear-gradient(300deg, rgba(56, 189, 248, 0.08), transparent 46%),
+      radial-gradient(ellipse 60% 50% at 50% 50%, rgba(2, 132, 199, 0.1), transparent 70%);
+  }
+  .boot-morph-scan {
+    background-image: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(103, 232, 249, 0.05) 45%,
+      rgba(103, 232, 249, 0.13) 50%,
+      rgba(103, 232, 249, 0.05) 55%,
+      transparent 100%
+    );
+    background-size: 100% 40%;
+    animation: boot-band-tag 5.5s var(--ease-in-out) infinite;
+  }
+  .boot-morph-vignette {
+    box-shadow: inset 0 0 60px -20px rgba(2, 6, 23, 0.9);
+    background-image: radial-gradient(ellipse 70% 60% at 50% 50%, transparent 45%, rgba(1, 5, 10, 0.55) 100%);
+  }
+
+  /* ═══ Analysis overlay ════════════════════════════════════════════════════
+     Stage rows and the progress ring are written per frame by LoadingOverlay.
+     The rules here are the resting treatments, so a row that has not arrived
+     yet is visibly unarrived rather than sitting at its final state for a frame. */
+
+  .analysis-root {
+    background-image:
+      radial-gradient(ellipse 70% 50% at 50% 0%, rgba(13, 148, 136, 0.08), transparent 70%),
+      linear-gradient(180deg, rgba(2, 6, 23, 0.98), rgba(2, 6, 23, 0.99));
+  }
+
+  .analysis-root-grid {
+    background-image:
+      linear-gradient(rgba(45, 212, 191, 0.035) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(45, 212, 191, 0.035) 1px, transparent 1px);
+    background-size: 36px 36px;
+    mask-image: radial-gradient(ellipse 70% 60% at 50% 50%, black 30%, transparent 78%);
+  }
+
+  /* Translated by the clock so the sweep is locked to the same timeline as
+     everything else instead of restarting on its own. */
+  .analysis-sweep {
+    position: absolute;
+    inset-inline: 0;
+    top: 0;
+    height: 30vh;
+    background: linear-gradient(to bottom, transparent, rgba(103, 232, 249, 0.05) 70%, rgba(103, 232, 249, 0.11));
+    pointer-events: none;
+    transform: translate3d(0, -30vh, 0);
+  }
+
+  .analysis-ring {
+    @apply relative flex h-[148px] w-[148px] flex-shrink-0 items-center justify-center;
+  }
+
+  .ring-readout {
+    position: absolute;
+  }
+
+  .analysis-zoom-sweep {
+    background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.32), transparent);
+  }
+
+  /* The knowledge deck cross-fades: both facts are always mounted, so the
+     rotation never blanks the panel and nothing remounts mid-swap. */
+  .analysis-fact {
+    transition:
+      opacity var(--dur-slow) var(--ease-out),
+      transform var(--dur-slow) var(--ease-out);
+  }
+  .analysis-fact[data-state="in"] {
+    opacity: 1;
+    transform: none;
+  }
+  .analysis-fact[data-state="out"] {
+    opacity: 0;
+    transform: translate3d(0, -5px, 0) scale(0.99);
+  }
+  .analysis-fact-leaving {
+    @apply pointer-events-none absolute inset-0;
+  }
+
+  .analysis-stage {
+    @apply flex items-center gap-2.5 border-l-2 pl-3 text-[11px] uppercase tracking-[0.13em];
+    transition:
+      border-color var(--dur-base) var(--ease-out),
+      color var(--dur-base) var(--ease-out);
+  }
+
+  .analysis-stage-complete {
+    @apply border-teal-500/50 text-slate-400;
+  }
+  .analysis-stage-active {
+    @apply border-cyan-300/70 text-cyan-100;
+  }
+  .analysis-stage-pending {
+    @apply border-slate-800 text-slate-700;
+  }
+
+  .analysis-stage-dot {
+    @apply h-1.5 w-1.5 flex-shrink-0 rounded-full;
+    transition: background-color var(--dur-base) var(--ease-out);
+  }
+  .analysis-stage-complete .analysis-stage-dot {
+    @apply bg-teal-400/80;
+  }
+  .analysis-stage-active .analysis-stage-dot {
+    @apply bg-cyan-300;
+    animation: analysis-stage-pulse 1.5s var(--ease-in-out) infinite;
+  }
+  .analysis-stage-pending .analysis-stage-dot {
+    @apply bg-slate-800;
+  }
+
+  .analysis-stage-tick {
+    @apply font-mono text-[9px] tracking-[0.14em];
+    transition: color var(--dur-base) var(--ease-out);
+  }
+  .analysis-stage-active .analysis-stage-tick {
+    @apply text-cyan-400/80;
+  }
+
+  .mission-query-block {
+    @apply rounded-lg border border-teal-500/20 bg-slate-950/60 p-3.5;
+  }
+
+  .mission-query-stage {
+    @apply font-mono text-[9.5px] uppercase tracking-[0.16em] text-slate-700;
+    transition: color var(--dur-slow) var(--ease-out);
+  }
+  .mission-query-stage-done {
+    @apply text-teal-400/70;
+  }
+  .mission-query-stage-active {
+    @apply text-cyan-300/90;
+  }
+
+  .capability-tile {
+    @apply relative rounded-md border border-slate-800/80 bg-slate-950/50 px-2 py-1.5;
+    transition:
+      border-color var(--dur-slow) var(--ease-out),
+      background-color var(--dur-slow) var(--ease-out);
+  }
+  .capability-tile-active {
+    @apply border-teal-500/40 bg-teal-500/[0.06];
+  }
+  .capability-tile-marker {
+    @apply absolute inset-x-2 bottom-0 h-px bg-teal-400/60;
+    animation: fade-in var(--dur-slow) var(--ease-out) both;
+  }
+
+  /* ═══ Intelligence pipeline ═══════════════════════════════════════════════
+     A stage advancing is an intentional status update, so it transitions on the
+     shared curve. The connector fill is a height transition from a value the
+     component sets, not an infinite loop: a completed pipeline has nothing left
+     to animate, and an endlessly running particle on a settled trace would be
+     claiming work that is not happening. */
+
+  .pipeline-node {
+    @apply absolute left-0 flex h-[22px] w-[22px] items-center justify-center rounded-full border;
+    transition:
+      border-color var(--dur-slow) var(--ease-out),
+      background-color var(--dur-slow) var(--ease-out),
+      color var(--dur-slow) var(--ease-out);
+  }
+
+  .pipeline-connector {
+    @apply absolute inset-x-0 top-0 bg-slate-800;
+    transition: background-color var(--dur-slow) var(--ease-out);
+  }
+
+  .pipeline-fill {
+    @apply absolute inset-x-0 top-0 bg-teal-500/45;
+    transition: height var(--dur-slow) var(--ease-out);
+  }
+
+  .pipeline-label {
+    @apply truncate text-[11.5px] uppercase tracking-[0.1em];
+    transition:
+      color var(--dur-slow) var(--ease-out),
+      opacity var(--dur-slow) var(--ease-out);
+  }
+
+  /* ═══ Query bar ══════════════════════════════════════════════════════════ */
+
+  .query-bar-scan {
+    @apply pointer-events-none absolute inset-y-0 left-0 w-1/3;
+    background: linear-gradient(90deg, transparent, rgba(45, 212, 191, 0.06), transparent);
+    animation: query-bar-scan 6s var(--ease-in-out) infinite;
+  }
+
+  .query-bar-field {
+    transition:
+      border-color var(--dur-base) var(--ease-out),
+      box-shadow var(--dur-base) var(--ease-out);
+  }
+  .query-bar-field[data-active="true"] {
+    border-color: rgb(45 212 191 / 0.5);
+    box-shadow:
+      0 0 0 1px rgb(45 212 191 / 0.12),
+      0 0 24px -8px rgb(45 212 191 / 0.35);
+  }
+
+  .query-command-chip {
+    @apply rounded-md border border-slate-800 bg-slate-900/90 px-2.5 py-1.5 text-left text-[11px]
+      text-slate-400 backdrop-blur-sm;
+    transition:
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out),
+      background-color var(--dur-fast) var(--ease-out);
+  }
+  .query-command-chip:hover {
+    @apply border-teal-500/30 text-slate-100;
+  }
+
+  /* The command deck is absolutely positioned, so showing and hiding it causes
+     no layout shift; it transitions rather than mounting. */
+  .query-commands {
+    @apply absolute bottom-full left-0 right-0 mb-2 flex flex-wrap gap-1.5;
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-base) var(--ease-out);
+  }
+  .query-commands[data-open="false"] {
+    @apply pointer-events-none opacity-0;
+    transform: translate3d(0, 6px, 0);
+  }
+
+  /* ═══ Imagery viewer ═════════════════════════════════════════════════════ */
+
+  .imagery-grid {
+    mask-image: radial-gradient(ellipse 80% 80% at 50% 50%, black 40%, transparent 85%);
+  }
+
+  /* The acquisition scan dissolves when the request resolves rather than being
+     removed, so the viewport never snaps out of its scanning state. */
+  .imagery-scan-layer {
+    @apply pointer-events-none absolute inset-0;
+    transition: opacity var(--dur-slow) var(--ease-out);
+  }
+  .imagery-scan-layer[data-active="false"] {
+    opacity: 0;
+  }
+
+  .imagery-scan {
+    background: linear-gradient(
+      to bottom,
+      transparent 0%,
+      rgba(45, 212, 191, 0.04) 40%,
+      rgba(103, 232, 249, 0.09) 50%,
+      rgba(45, 212, 191, 0.04) 60%,
+      transparent 100%
+    );
+    animation: imagery-scan 2.8s var(--ease-in-out) infinite;
+  }
+  .imagery-scanline {
+    background: linear-gradient(to bottom, transparent, rgba(103, 232, 249, 0.16), transparent);
+    animation: imagery-scanline 2.8s var(--ease-in-out) infinite;
+  }
+
+  .evidence-roi {
+    transform-origin: 50% 50%;
+    transition:
+      transform var(--dur-slow) var(--ease-spring),
+      opacity var(--dur-base) var(--ease-out);
+  }
+  .evidence-roi[data-entering="true"] {
+    transform: scale(1.04);
+    opacity: 0;
+  }
+
+  /* ═══ Result panel ════════════════════════════════════════════════════════
+     Arrives from the same side it lives on, with a little overshoot from the
+     spring curve, and settles. Painted in its arriving state on the first frame
+     so it is never shown at rest and then snapped backwards. */
+
+  .result-panel {
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-slow) var(--ease-spring);
+  }
+  .result-panel[data-arrived="false"] {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.985);
+  }
+
+  /* ═══ Evidence lock ══════════════════════════════════════════════════════ */
+
+  .evidence-card {
+    transition:
+      opacity var(--dur-base) var(--ease-out),
+      transform var(--dur-slow) var(--ease-spring);
+  }
+  .evidence-card[data-entering="true"] {
+    transform: translateY(6px);
+    opacity: 0;
+  }
+
+  .evidence-lock {
+    @apply flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full border
+      border-emerald-500/30 bg-emerald-500/10 text-emerald-400;
+    transition:
+      transform var(--dur-slow) var(--ease-spring),
+      opacity var(--dur-base) var(--ease-out);
+  }
+  .evidence-lock[data-entering="true"] {
+    transform: scale(0.7);
+    opacity: 0;
+  }
+
+  /* Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â Evidence lock Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â */
+
+  .evidence-card {
+    animation: fade-in-up 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+
+  .evidence-lock {
+    @apply mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full
+      border border-emerald-500/30 bg-emerald-500/10 text-emerald-400;
+    animation: evidence-lock-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: inherit;
+  }
+}
+
+@layer utilities {
+  .scroll-y {
+    @apply overflow-y-auto overscroll-contain;
+  }
+
+  .text-glow {
+    text-shadow: 0 0 12px rgba(20, 184, 166, 0.35);
+  }
+
+  .animate-fade-in {
+    animation: fade-in var(--dur-base) var(--ease-out) both;
+  }
+
+  /* Only used where something is genuinely live — an in-flight request or a
+     booting subsystem. */
+  .animate-status-pulse {
+    animation: status-pulse 2s var(--ease-in-out) infinite;
+  }
+}
+
+/* Ã¢â€â‚¬Ã¢â€â‚¬ Reduced motion Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+   Motion is presentation-only everywhere in this app: the boot
+   window, the stage sequence, the rotating tip/capability cards
+   and the pending trace all carry their state in text, so
+   collapsing durations removes movement without removing meaning. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    /* Without this, a staggered reveal (evidence cards) would still wait on its
+       delay before snapping in, which is a delayed appearance by another name. */
+    transition-delay: 0.001ms !important;
+    scroll-behavior: auto !important;
   }
 }
