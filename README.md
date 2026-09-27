@@ -19,13 +19,14 @@ license: mit
 <img src="assets/banner3.png" alt="SatQuery AI" width="1000" />
 
 [![OpenEnv](https://img.shields.io/badge/SIH-2026-blue?style=flat-square)](https://www.sih.gov.in/)
-[![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace%20Spaces-yellow?style=flat-square)](https://huggingface.co/spaces/imadityasarkar/satquery-ai)
+[![HuggingFace](https://img.shields.io/badge/🤗-HuggingFace%20Spaces-yellow?style=flat-square)](https://huggingface.co/spaces/imadityasarkar/satquery-backend)
+[![Vercel](https://img.shields.io/badge/Vercel-Live-black?style=flat-square)](https://sat-query-ai-sih-26.vercel.app)
 [![VLM](https://img.shields.io/badge/VLM-Qwen2--VL--2B-purple?style=flat-square)](#tech-stack)
 [![Trace](https://img.shields.io/badge/ExecutionTrace-Graded-red?style=flat-square)](#how-it-works--pipeline-flowchart)
 
 Smart India Hackathon 2026 — Agentic Vision-Language Intelligence for Earth Observation
 
-[🚀 Live Space](https://huggingface.co/spaces/imadityasarkar/satquery-ai) · [📓 Training Notebook](https://colab.research.google.com/github/awdtyo/SatQueryAI-SIH26/blob/main/training/notebooks/satquery_ai_qlora_finetune.ipynb) · [📝 Execution Trace](docs/execution_trace_schema.md)
+[🚀 Live App](https://sat-query-ai-sih-26.vercel.app) · [🛰️ Backend Space](https://huggingface.co/spaces/imadityasarkar/satquery-backend) · [📓 Training Notebook](https://colab.research.google.com/github/awdtyo/SatQueryAI-SIH26/blob/main/training/notebooks/satquery_ai_qlora_finetune.ipynb) · [📝 Execution Trace](docs/execution_trace_schema.md)
 
 </div>
 
@@ -146,8 +147,8 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 | **Adapters** | `Qwen/Qwen2-VL-2B-Instruct` + LoRA `r=16 α=32` (stage-1 → stage-2 → stage-3 chain) | Via `backend/config.py:18` `BASE_MODEL` / `ADAPTER_PATH` / `CHANGE_ADAPTER_PATH` / `FUSION_ADAPTER_PATH` |
 | **Counting** | **Ultralytics ≥8.2** (`yolov8n.pt`), **OpenCV ≥4.8** | `backend/models/yolo.py:1`, configurable via `SATQUERY_YOLO_*` |
 | **Charts / Vision** | **Pillow ≥10**, `numpy<2`, `torchvision ≥0.18`, `matplotlib ≥3.5`, `rasterio` (optional) | `Pillow` for `RGB` conversion, `rasterio` for `.tif` bands, `matplotlib` for Gradio plots |
-| **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, local Vite proxy `/api → 8000`, prod Gradio queue `/gradio_api/call/*`, poll health every 15s |
-| **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=60)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0` |
+| **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, local Vite proxy `/api → 8000`, prod same-origin Vercel proxy `/api/gradio/*` → Space (server-side `HF_TOKEN`, own ZeroGPU quota), poll health every 15s |
+| **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=120)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0`, cheap (model-free) health by default |
 | **Training env** | **Google Colab T4** (15GB, sm_75, fp16), fallback Kaggle T4×2 | Free-tier safe: Drive checkpoints, subset caching |
 | **Testing** | `pytest`, `httpx`, `ruff`, `mypy` | `tests/test_controller_api.py`, `tests/test_registry.py`, `tests/test_vqa_wrapper.py` |
 
@@ -337,7 +338,7 @@ print(r.json()["answer"])
 
 ### Run via HF Spaces (ZeroGPU)
 
-Space: `https://huggingface.co/spaces/imadityasarkar/satquery-ai` — Gradio `zero-a10g` `app.py` with `@spaces.GPU(duration=60)` (`SATQUERY_FORCE_CPU=0` enables 4-bit on Blackwell, `~1s` vs `~70s` CPU). Frontend is `app.py` Blocks; local React console remains at `5173`.
+Space: `https://huggingface.co/spaces/imadityasarkar/satquery-backend` — Gradio `zero-a10g` `app.py` with `@spaces.GPU(duration=120)` (`SATQUERY_FORCE_CPU=0` enables 4-bit on Blackwell, `~1s` vs `~70s` CPU; 120s covers the ~4 GB cold pull + location fetch). Frontend is `app.py` Blocks; local React console remains at `5173`. Health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
 
 ### Run via Docker (CPU or auto-GPU)
 
@@ -409,9 +410,9 @@ Per-dataset hyperparams live in `training/configs/*.json` (see table above).
 - **Evidence** — `image_ref` / `bounding_box [[x,y]...]` / `overlay` per task
 - **Query Log** — last 20 queries, click to re-run
 
-### HF Space (`https://huggingface.co/spaces/imadityasarkar/satquery-ai`)
+### HF Space (`https://huggingface.co/spaces/imadityasarkar/satquery-backend`)
 
-Same `Blocks` in `app.py:367` with `Refresh health` (`@spaces.GPU` on demand, no quota at startup) and `chart_state` Bar/Pie toggle identical to React. First click cold-pulls ~4 GB (30–60 s), warm ~1.2 s.
+Same `Blocks` in `app.py` with `Refresh health` (cheap by default — no model load, no GPU quota burn) and `chart_state` Bar/Pie toggle identical to React. First click cold-pulls ~4 GB (30–60 s), warm ~1.2 s. Error paths return schema-valid traces so failures render as messages, never a blank crash.
 
 ---
 
@@ -435,6 +436,9 @@ mvp/
 │   ├── api/__init__.py             # /health + /query routes (thin, delegates to controller)
 │   └── utils/chart.py              # heuristic chart (measured, not LLM)
 ├── frontend/
+│   ├── api/gradio/               # Vercel serverless proxy (self-contained, no imports):
+│   │                             # info.ts, upload.ts, call/predict.ts, call/predict/[eventId].ts
+│   │                             # → Space /gradio_api/* with server-side Bearer $HF_TOKEN
 │   ├── src/
 │   │   ├── App.tsx                 # 3-zone console + health poll + query log
 │   │   ├── api/mockClient.ts       # real fetch client → /api/query + /api/health (supports location)
@@ -516,24 +520,34 @@ SATQUERY_TASK_OVERRIDES=                # e.g. "vqa:custom_vqa,grounding:my_grou
 **Frontend:** `cd frontend && npm install && npm run dev` → `http://localhost:5173`
 **Both:** `make pitch-demo` (`:8000` + `:5173` via `Vite proxy /api → 8000`)
 
-**Two-deployment architecture:**
+**Two-deployment architecture (with authenticated proxy):**
 
 ```text
-Vercel (React console)             HF Space — Gradio SDK, zero-a10g (NEW: satquery-backend)
-React + Vite  ──HTTPS──────────►  POST /gradio_api/upload          (FileData per image)
-VITE_API_BASE_URL                    POST /gradio_api/call/predict → Gradio queue
-                                     GET  /gradio_api/call/predict/{event_id}  (SSE → outputs)
-                                     → @spaces.GPU predict → controller → registry → ZeroGPU
+Vercel (React console, no inference)      HF Space — Gradio SDK, zero-a10g (satquery-backend)
+React + Vite ──HTTPS──► /api/gradio/* ──► POST /gradio_api/upload          (FileData per image)
+(same-origin proxy)      Authorization:    POST /gradio_api/call/predict → Gradio queue
+                         Bearer $HF_TOKEN  GET  /gradio_api/call/predict/{event_id}  (SSE → outputs)
+                         (server-side)     → @spaces.GPU predict → controller → registry → ZeroGPU
 ```
 
-* Frontend (Vercel, no inference): Root Directory `frontend`, build `npm install && npm run build`,
-  output `dist/`, SPA fallback `frontend/vercel.json`. Public var
+* Why the proxy: browsers calling the Space anonymously land in ZeroGPU's shared
+  anonymous pool and 429 (`device-api.zero/schedule`). `frontend/api/gradio/*.ts`
+  (explicit routes: `info`, `upload`, `call/predict`, `call/predict/[eventId]`)
+  attach `Authorization: Bearer $HF_TOKEN` server-side so usage bills the owner's
+  own quota. The token is never in the browser bundle — never put secrets in `VITE_*`.
+  Server env (Vercel → Settings → Environment Variables, all environments):
+  `SATQUERY_SPACE_URL=https://imadityasarkar-satquery-backend.hf.space`, `HF_TOKEN=hf_...`.
+  Local `vite dev` has no proxy function, so localhost calls the Space directly (anonymous quota).
+* Frontend (Vercel): Root Directory `frontend`, build `npm install && npm run build`,
+  output `dist/`, SPA fallback `frontend/vercel.json` (excludes `/api/*` so function
+  routes aren't swallowed). Public var
   `VITE_API_BASE_URL` = local `http://localhost:8000` (FastAPI transport, Vite proxy also works with
-  an empty value), prod `https://YOUR_HF_USERNAME-satquery-backend.hf.space` (Gradio queue transport).
+  an empty value), prod `https://imadityasarkar-satquery-backend.hf.space` (selects the Gradio
+  transport; queue calls themselves go through the same-origin proxy).
   Transport auto-detects from the base URL (empty/localhost → FastAPI, anything else → Gradio);
   override with `VITE_API_TRANSPORT=gradio|fastapi`. Every submission opens a fresh queue job
-  (`event_id` never reused). Never put `HF_TOKEN` / secrets in `VITE_*`.
-* Backend (NEW HF Space, Gradio SDK — required for ZeroGPU): README frontmatter
+  (`event_id` never reused).
+* Backend (HF Space `imadityasarkar/satquery-backend`, Gradio SDK — required for ZeroGPU): README frontmatter
   `sdk: gradio`, `app_file: app.py`, `hardware: zero-a10g`; `python app.py` → `demo.queue(max_size=20)`
   + `demo.launch`. The client contract (derived from Gradio 5.16.1, no hardcoded guesses):
   `POST /gradio_api/upload` (multipart `files`) → `{path, orig_name, meta: {_type: "gradio.FileData"}}`
@@ -554,7 +568,8 @@ VITE_API_BASE_URL                    POST /gradio_api/call/predict → Gradio qu
   optional `.gitignore` (+ `assets/` if present). Do NOT push `Dockerfile`, `frontend/`,
   `training/`, `tests/`, `data/`, `.env`.
 * EXISTING HF Space (`imadityasarkar/satquery-ai`) remains a separate backup/demo Gradio +
-  ZeroGPU deployment — DO NOT modify, migrate, or replace it as part of this work.
+  ZeroGPU deployment — DO NOT modify, migrate, or replace it as part of this work. The live
+  backend is `satquery-backend`; the live frontend is `https://sat-query-ai-sih-26.vercel.app`.
 
 Checks:
 

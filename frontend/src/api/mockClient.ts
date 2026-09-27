@@ -14,7 +14,7 @@ import type {
  * - fastapi (local dev): FormData POST to /api/query on backend/main.py —
  *   VITE_API_BASE_URL empty (Vite proxy /api) or http://localhost:8000.
  * - gradio (production): Vercel same-origin proxy /api/gradio/* → Space
- *   /gradio_api/* (frontend/api/gradio/[...path].ts). Images are uploaded via
+ *   /gradio_api/* (frontend/api/gradio/*.ts, explicit routes). Images are uploaded via
  *   POST /api/gradio/upload (FileData), then a FRESH queue job per submission:
  *   POST /api/gradio/call/predict  →  GET /api/gradio/call/predict/{event_id}
  *   (SSE: heartbeat* → complete | error). The proxy attaches
