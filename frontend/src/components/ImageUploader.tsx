@@ -1,37 +1,10 @@
 import { useCallback, useRef, useState } from "react";
 import type { InputMode, UploadedImage } from "../types/api";
+import InputModeTabs, { INPUT_MODES } from "./InputModeTabs";
+import FileDropzone, { FormatChips } from "./FileDropzone";
+import LoadedFileCard from "./LoadedFileCard";
 
 const ACCEPTED_EXTENSIONS = ".tif,.tiff,.png,.jpg,.jpeg";
-
-const MODES: { key: InputMode; label: string; slots: number; slotLabels: string[]; description: string }[] = [
-  {
-    key: "single",
-    label: "SINGLE",
-    slots: 1,
-    slotLabels: ["Image"],
-    description: "Single optical or SAR image",
-  },
-  {
-    key: "optical-sar",
-    label: "OPTICAL+SAR",
-    slots: 2,
-    slotLabels: ["Optical", "SAR"],
-    description: "Co-registered optical and SAR pair",
-  },
-  {
-    key: "bi-temporal",
-    label: "BI-TEMPORAL",
-    slots: 2,
-    slotLabels: ["Date 1 (T1)", "Date 2 (T2)"],
-    description: "Same location, two different dates",
-  },
-];
-
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 interface Props {
   images: UploadedImage[];
@@ -44,8 +17,14 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
   const [isDragging, setIsDragging] = useState(false);
   const [activeSlot, setActiveSlot] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const draggingSlotRef = useRef<number | null>(null);
 
-  const currentMode = MODES.find((m) => m.key === inputMode)!;
+  const currentMode = INPUT_MODES.find((m) => m.key === inputMode)!;
+
+  const setDraggingSlot = useCallback((slot: number | null) => {
+    draggingSlotRef.current = slot;
+    setIsDragging(slot !== null);
+  }, []);
 
   const handleFiles = useCallback(
     (files: FileList | null, slotIndex: number) => {
@@ -87,12 +66,23 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
   );
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setIsDragging(false);
-      handleFiles(e.dataTransfer.files, activeSlot);
+    (event: React.DragEvent, slotIndex: number) => {
+      event.preventDefault();
+      setDraggingSlot(null);
+      setActiveSlot(slotIndex);
+      handleFiles(event.dataTransfer.files, slotIndex);
     },
-    [handleFiles, activeSlot],
+    [handleFiles, setDraggingSlot],
+  );
+
+  const handleDragLeave = useCallback(
+    (event: React.DragEvent, slotIndex: number) => {
+      // Ignore dragleave events fired while moving between the dropzone's own children.
+      const next = event.relatedTarget as Node | null;
+      if (next && event.currentTarget.contains(next)) return;
+      if (draggingSlotRef.current === slotIndex) setDraggingSlot(null);
+    },
+    [setDraggingSlot],
   );
 
   const removeImage = useCallback(
@@ -119,131 +109,41 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
     [images, setImages, setInputMode],
   );
 
+  const browse = useCallback(() => fileInputRef.current?.click(), []);
+
   return (
-    <div className="space-y-4">
-      {/* Mode selector */}
-      <div>
-        <label className="block text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em] mb-2">
-          Input Mode
-        </label>
-        <div className="flex bg-surface-900 border border-surface-400/40 rounded-lg overflow-hidden">
-          {MODES.map((mode) => (
-            <button
-              key={mode.key}
-              onClick={() => handleModeChange(mode.key)}
-              className={`
-                flex-1 px-2 py-2 text-[11px] font-medium tracking-wide transition-all duration-150
-                ${
-                  inputMode === mode.key
-                      ? "bg-accent/10 text-accent"
-                    : "text-ink-muted hover:text-ink-secondary"
-                }
-              `}
-            >
-              {mode.label}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="space-y-3">
+      <InputModeTabs value={inputMode} onChange={handleModeChange} />
 
-      {/* Supported formats */}
-      <p className="text-[11px] text-ink-muted">
-        Supported: <span className="text-ink-secondary">GeoTIFF · TIFF · PNG · JPEG</span>
-      </p>
-
-      {/* Upload / preview area */}
-      <div className={`grid gap-2.5 ${currentMode.slots === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
+      <div className={`grid gap-2 ${currentMode.slots === 1 ? "grid-cols-1" : "grid-cols-2"}`}>
         {currentMode.slotLabels.map((slotLabel, idx) => {
           const image = images[idx];
-          return (
-            <div
+          return image ? (
+            <LoadedFileCard
               key={`${inputMode}-${idx}`}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
+              image={image}
+              slotLabel={slotLabel}
+              onRemove={() => removeImage(idx)}
+            />
+          ) : (
+            <FileDropzone
+              key={`${inputMode}-${idx}`}
+              slotLabel={slotLabel}
+              dragging={isDragging && activeSlot === idx}
+              onActivate={() => setActiveSlot(idx)}
+              onDragEnter={() => {
                 setActiveSlot(idx);
+                setDraggingSlot(idx);
               }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-              onClick={() => {
-                setActiveSlot(idx);
-                fileInputRef.current?.click();
-              }}
-              className={`
-                relative border cursor-pointer transition-colors duration-150 overflow-hidden rounded-lg
-                ${
-                  image
-                    ? "border-surface-400/40 bg-surface-700/30"
-                    : isDragging && activeSlot === idx
-                      ? "border-accent/50 bg-accent/5"
-                      : "border-dashed border-surface-400/40 bg-surface-900/40 hover:border-accent/40"
-                }
-              `}
-            >
-              {image ? (
-                <div className="relative group">
-                  <img
-                    src={image.preview}
-                    alt={image.label}
-                    className="w-full h-28 object-cover opacity-90 group-hover:opacity-100 transition-opacity"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-surface-900 via-surface-900/20 to-transparent" />
-                  <div className="absolute top-2 right-2">
-                    <span className="w-2 h-2 rounded-full bg-signal-green block" />
-                  </div>
-                  <div className="absolute bottom-0 left-0 right-0 px-2 pb-1.5 pt-6">
-                    <div className="flex items-end justify-between">
-                      <div className="min-w-0">
-                        <div className="text-[11px] font-medium text-accent">
-                          {slotLabel.toUpperCase()}
-                        </div>
-                        <div className="text-[10px] text-ink-secondary truncate">
-                          {image.file.name.slice(0, 28)}
-                        </div>
-                        <div className="text-[10px] text-ink-muted">
-                          {formatFileSize(image.file.size)}
-                        </div>
-                      </div>
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeImage(idx);
-                        }}
-                        className="text-[10px] font-medium text-signal-red/60 hover:text-signal-red transition-colors flex-shrink-0 ml-1"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center justify-center h-28 gap-2 px-2 text-center">
-                  <svg
-                    width="24"
-                    height="24"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.2"
-                    className="text-ink-muted"
-                  >
-                    <rect x="3" y="3" width="18" height="18" rx="2" />
-                    <circle cx="9" cy="9" r="1.5" fill="currentColor" />
-                    <path d="M21 15l-5-5L5 21" />
-                  </svg>
-                  <span className="text-[11px] text-ink-secondary">
-                    {isDragging && activeSlot === idx
-                      ? "Drop here"
-                      : currentMode.slots === 1
-                        ? "Drop image or Browse"
-                        : `Drop ${slotLabel} or Browse`}
-                  </span>
-                </div>
-              )}
-            </div>
+              onDragLeave={(event) => handleDragLeave(event, idx)}
+              onDrop={(event) => handleDrop(event, idx)}
+              onBrowse={browse}
+            />
           );
         })}
       </div>
+
+      <FormatChips />
 
       <input
         ref={fileInputRef}
@@ -253,18 +153,16 @@ export default function ImageUploader({ images, setImages, inputMode, setInputMo
         onChange={(e) => handleFiles(e.target.files, activeSlot)}
       />
 
-      {/* Status */}
       {images.length > 0 && (
         <div className="flex items-center justify-between text-[11px]">
-          <div className="flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-signal-green" />
-            <span className="text-ink-secondary">
-              {images.length} file{images.length !== 1 ? "s" : ""} loaded
-            </span>
-          </div>
+          <span className="flex items-center gap-1.5 text-slate-400">
+            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" />
+            {images.length} file{images.length !== 1 ? "s" : ""} loaded
+          </span>
           {currentMode.slots === 2 && images.length < currentMode.slots && (
-            <span className="text-signal-amber">
-              {currentMode.slots - images.length} slot{currentMode.slots - images.length > 1 ? "s" : ""} empty
+            <span className="text-amber-400">
+              {currentMode.slots - images.length} slot
+              {currentMode.slots - images.length > 1 ? "s" : ""} empty
             </span>
           )}
         </div>

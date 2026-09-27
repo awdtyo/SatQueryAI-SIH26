@@ -1,205 +1,145 @@
-import { useState } from "react";
-import type { ExecutionTrace, ModelTraceEntry } from "../types/api";
+import type { ExecutionTrace, HealthState, ModelTraceEntry } from "../types/api";
+import CollapsiblePanel from "./ui/CollapsiblePanel";
+import TraceNodeList from "./ui/ExecutionTimeline";
+import ModelTraceRow from "./ModelTraceRow";
+import { buildTraceView } from "../lib/analysisStages";
 
 interface Props {
   trace: ExecutionTrace | null;
+  /** Real pending state of the query request. */
+  isRunning?: boolean;
+  /** Health payload — decides READY vs. unreachable in the idle state. */
+  health?: HealthState;
 }
 
-const PIPELINE_STEPS = [
-  "Query Parsed",
-  "Task Classified",
-  "Model Selected",
-  "Imagery Analyzed",
-  "Evidence Generated",
-  "Result Compiled",
-];
+/**
+ * Execution trace panel.
+ *
+ * The node chain is derived from real state by `buildTraceView`: idle reads
+ * SYSTEM READY, an in-flight request marks nothing complete, and a landed
+ * response reports exactly which of the five nodes ran.
+ */
+export default function ExecutionTracePanel({ trace, isRunning = false, health = null }: Props) {
+  const view = buildTraceView(health, isRunning, trace);
 
-function getModelStepIndex(modelCount: number, totalSteps: number): number[] {
-  if (modelCount === 0) return [];
-  const used = Math.min(modelCount, 2);
-  return Array.from({ length: used }, (_, i) => {
-    return Math.floor(((i + 1) / (used + 1)) * totalSteps);
-  });
-}
+  const badge = isRunning ? (
+    <span className="tag border-teal-500/30 bg-teal-500/10 text-teal-300">
+      <span className="h-1 w-1 animate-pulse rounded-full bg-teal-400" aria-hidden="true" />
+      In flight
+    </span>
+  ) : trace ? (
+    <span className="tag border-emerald-500/20 bg-emerald-500/10 text-emerald-400">Complete</span>
+  ) : (
+    <span className="tag border-teal-500/20 bg-teal-500/10 text-teal-300">System ready</span>
+  );
 
-function ModelRow({ model }: { model: ModelTraceEntry }) {
-  const isStub = model.is_stub ?? (model.is_real === false);
-  const badge = isStub ? "STUB" : model.is_real ? "REAL" : null;
-  return (
-    <div className="ml-6 pl-3 border-l border-accent/20 py-2">
-      <div className="flex items-center gap-2.5">
-        <span className="text-[12px] font-medium text-accent truncate max-w-[150px]" title={model.name}>{model.name}</span>
-        <span className="tag-muted">{model.role}</span>
-        {badge && (
-          <span className={`text-[9px] px-1.5 py-0.5 rounded font-medium tracking-wider ${isStub ? "bg-signal-amber/15 text-signal-amber border border-signal-amber/20" : "bg-signal-green/15 text-signal-green border border-signal-green/20"}`}>
-            {badge}
-          </span>
-        )}
-        <span className="ml-auto text-[11px] text-ink-muted tabular-nums">
-          {model.latency_ms}ms
-        </span>
-      </div>
-      <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
-        {Object.entries(model.parameters).map(([k, v]) => (
-          <span key={k} className="text-[10px] font-mono text-ink-secondary">
-            <span className="text-ink-muted">{k}:</span> {String(v)}
-          </span>
-        ))}
-      </div>
+  const body = (
+    <div className="space-y-4">
+      <p className="text-[11px] leading-relaxed text-slate-500" role="status" aria-live="polite">
+        {view.summary}
+      </p>
+
+      <TraceNodeList nodes={view.nodes} inFlight={view.inFlight} />
+
+      {trace && !isRunning && <TraceDetails trace={trace} />}
     </div>
   );
-}
 
-export default function ExecutionTracePanel({ trace }: Props) {
-  const [expanded, setExpanded] = useState(true);
-
-  if (!trace) {
+  if (isRunning || !trace) {
     return (
-      <section className="panel flex-1 min-h-0 flex flex-col">
-        <div className="panel-header">
-          <span className="panel-label">Execution Trace</span>
-        </div>
-        <div className="panel-body flex-1 flex items-center justify-center">
-          <p className="text-[12px] text-ink-muted">Awaiting analysis</p>
-        </div>
-      </section>
+      <CollapsiblePanel label="Execution Trace" className="flex-1" action={badge}>
+        {body}
+      </CollapsiblePanel>
     );
   }
 
-  // Defensive: Gradio error paths may return partial traces — never crash on .length
-  const modelsUsed = Array.isArray(trace.models_used) ? trace.models_used : [];
+  return (
+    <CollapsiblePanel
+      label="Execution Trace"
+      className="flex-1"
+      action={
+        <div className="flex items-center gap-2">
+          {badge}
+          <span className="text-[11px] tabular-nums text-slate-500">
+            {trace.total_latency_ms}ms
+          </span>
+        </div>
+      }
+    >
+      {body}
+    </CollapsiblePanel>
+  );
+}
+
+/** Response-derived detail: task, models, parameters, evidence. All real. */
+function TraceDetails({ trace }: { trace: ExecutionTrace }) {
+  // Gradio error paths may return partial traces — never crash on .length
+  const modelsUsed: ModelTraceEntry[] = Array.isArray(trace.models_used) ? trace.models_used : [];
   const evidenceRefs = Array.isArray(trace.evidence_refs) ? trace.evidence_refs : [];
-  const parameters = trace.parameters && typeof trace.parameters === "object" ? trace.parameters : {};
-  const taskLabel = typeof trace.task === "string" && trace.task ? trace.task.replace("_", " ").toUpperCase() : "UNKNOWN";
-  const modelSteps = getModelStepIndex(modelsUsed.length, PIPELINE_STEPS.length);
+  const parameters =
+    trace.parameters && typeof trace.parameters === "object" ? trace.parameters : {};
+  const taskLabel =
+    typeof trace.task === "string" && trace.task
+      ? trace.task.replace(/_/g, " ").toUpperCase()
+      : "UNNAMED";
 
   return (
-    <section className="panel flex-1 min-h-0 flex flex-col">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="panel-header hover:bg-surface-700/30 transition-colors cursor-pointer"
-      >
-        <span className="panel-label">Execution Trace</span>
-        <div className="flex-1" />
-        <span className="text-[11px] text-ink-muted tabular-nums">
-          {trace.total_latency_ms}ms
-        </span>
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 12 12"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.5"
-          className={`text-ink-muted transition-transform duration-150 ${expanded ? "rotate-180" : ""}`}
-        >
-          <path d="M3 5l3 3 3-3" />
-        </svg>
-      </button>
+    <div className="space-y-5">
+      <div className="divider" />
 
-      {expanded && (
-        <div className="panel-body overflow-y-auto flex-1 min-h-0 space-y-4">
-          {/* Pipeline steps */}
-          <div>
-            <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em] block mb-2">
-              Pipeline
-            </span>
-            <div className="space-y-0">
-              {PIPELINE_STEPS.map((step, i) => {
-                const isModelStep = modelSteps.includes(i);
-                const isLastStep = i === PIPELINE_STEPS.length - 1;
-                const isComplete = true;
+      <section className="space-y-2">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Task
+          </span>
+          <span className="text-[12px] font-medium text-teal-300">{taskLabel}</span>
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+            Model
+          </span>
+          <span className="truncate text-[12px] text-slate-400">{modelsUsed[0]?.name ?? "N/A"}</span>
+        </div>
+      </section>
 
-                return (
-                  <div key={i}>
-                    <div className="flex items-center gap-3 py-1.5">
-                      <span className="text-[10px] font-mono text-ink-muted w-6 text-right tabular-nums">
-                        {i + 1}
-                      </span>
-                      {/* Status icon (check) */}
-                      <span className="w-4 flex-shrink-0 flex justify-center">
-                        <svg
-                          width="13"
-                          height="13"
-                          viewBox="0 0 16 16"
-                          fill="none"
-                          className={isComplete ? "text-signal-green" : "text-surface-400"}
-                        >
-                          <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </span>
-                      <span
-                        className={`text-[12px] font-medium ${
-                          isComplete ? "text-ink-secondary" : "text-ink-muted/50"
-                        }`}
-                      >
-                        {step}
-                      </span>
-                    </div>
+      {modelsUsed.length > 0 && (
+        <section className="space-y-2">
+          <h3 className="field-label">Models invoked</h3>
+          {modelsUsed.map((model, i) => (
+            <ModelTraceRow key={`${model.name}-${i}`} model={model} />
+          ))}
+        </section>
+      )}
 
-                    {isModelStep && modelsUsed[modelSteps.indexOf(i)] && (
-                      <ModelRow model={modelsUsed[modelSteps.indexOf(i)]!} />
-                    )}
-
-                    {!isLastStep && <div className="ml-[30px] w-px h-1 bg-surface-400/20" />}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="divider" />
-
-          {/* Task */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em]">
-                Task
-              </span>
-              <span className="text-[12px] font-medium text-accent">
-                {taskLabel}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em]">
-                Model
-              </span>
-              <span className="text-[12px] text-ink-secondary">
-                {modelsUsed[0]?.name ?? "N/A"}
-              </span>
-            </div>
-          </div>
-
-          {/* Parameters */}
-          <div>
-            <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em] block mb-2">
-              Parameters
-            </span>
-            <div className="space-y-1.5">
-              {Object.entries(parameters).map(([k, v]) => (
-                <div key={k} className="flex items-center justify-between gap-2">
-                  <span className="text-[11px] text-ink-muted truncate min-w-0">{k}</span>
-                  <span className="flex-1 border-b border-dotted border-surface-400/20 min-w-[10px]" />
-                  <span className="text-[11px] font-mono text-ink-secondary tabular-nums whitespace-nowrap">
-                    {String(v)}
+      {Object.keys(parameters).length > 0 && (
+        <section>
+          <h3 className="field-label">Parameters</h3>
+          <div className="space-y-1.5">
+            {Object.entries(parameters)
+              .filter(([key]) => !key.startsWith("_"))
+              .map(([key, value]) => (
+                <div key={key} className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-[11px] text-slate-500">
+                    {key.replace(/_/g, " ")}
+                  </span>
+                  <span className="min-w-[10px] flex-1 border-b border-dotted border-slate-800" />
+                  <span className="whitespace-nowrap font-mono text-[11px] tabular-nums text-slate-400">
+                    {String(value)}
                   </span>
                 </div>
               ))}
-            </div>
           </div>
-
-          {/* Evidence */}
-          <div className="flex items-center justify-between pt-1">
-            <span className="text-[10px] font-medium text-ink-muted uppercase tracking-[0.1em]">
-              Evidence
-            </span>
-            <span className="text-[11px] text-ink-secondary">
-              {evidenceRefs.length} reference{evidenceRefs.length !== 1 ? "s" : ""}
-            </span>
-          </div>
-        </div>
+        </section>
       )}
-    </section>
+
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+          Evidence
+        </span>
+        <span className="text-[11px] tabular-nums text-slate-400">
+          {evidenceRefs.length} reference{evidenceRefs.length !== 1 ? "s" : ""}
+        </span>
+      </div>
+    </div>
   );
 }

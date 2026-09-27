@@ -1,5 +1,6 @@
 import { useCallback, useState } from "react";
 import type { InputMode } from "../types/api";
+import { formatCoords } from "../lib/imageMeta";
 
 interface Props {
   inputMode: InputMode;
@@ -11,6 +12,11 @@ interface Props {
   setInputSource: (v: "upload" | "location") => void;
 }
 
+const SOURCES: { key: "upload" | "location"; label: string; sub: string }[] = [
+  { key: "upload", label: "Upload", sub: "Local file" },
+  { key: "location", label: "Location", sub: "Resolve coordinates" },
+];
+
 function parseLatLon(s: string): { lat: number; lon: number } | null {
   const m = s.trim().match(/^\s*([+-]?\d+(?:\.\d+)?)\s*[, ]\s*([+-]?\d+(?:\.\d+)?)\s*$/);
   if (!m) return null;
@@ -21,6 +27,18 @@ function parseLatLon(s: string): { lat: number; lon: number } | null {
   return { lat, lon };
 }
 
+/**
+ * Imagery source switch plus the location form.
+ *
+ * The form unfolds out of the tab bar when "Location" is selected. Coordinate
+ * detection is real — it only reports a match when the field actually parses as
+ * `lat, lon` — and the confirmation animates in once.
+ *
+ * There are deliberately no date-range, cloud-cover or source-filter controls
+ * here: the query endpoint accepts a place, a coordinate pair and an optional
+ * second location, and nothing else. Adding more would imply filtering the app
+ * cannot actually perform.
+ */
 export default function LocationSearchInput({
   inputMode,
   locationQuery,
@@ -30,7 +48,7 @@ export default function LocationSearchInput({
   inputSource,
   setInputSource,
 }: Props) {
-  const [focused, setFocused] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
   const isLocation = inputSource === "location";
   const showSecond = inputMode === "bi-temporal";
 
@@ -44,101 +62,200 @@ export default function LocationSearchInput({
 
   return (
     <div className="space-y-3">
-      {/* Source toggle */}
-      <div className="flex bg-surface-900 border border-surface-400/40 rounded-lg overflow-hidden">
-        <button
-          onClick={() => setInputSource("upload")}
-          className={`flex-1 px-2 py-2 text-[11px] font-medium tracking-wide transition-colors ${
-            inputSource === "upload" ? "bg-accent/10 text-accent" : "text-ink-muted hover:text-ink-secondary"
-          }`}
-        >
-          Upload
-        </button>
-        <button
-          onClick={() => setInputSource("location")}
-          className={`flex-1 px-2 py-2 text-[11px] font-medium tracking-wide transition-colors ${
-            isLocation ? "bg-accent/10 text-accent" : "text-ink-muted hover:text-ink-secondary"
-          }`}
-        >
-          Search by location
-        </button>
+      <div
+        role="tablist"
+        aria-label="Imagery source"
+        className="flex gap-1 rounded-lg border border-slate-800 bg-slate-950 p-1"
+      >
+        {SOURCES.map((source) => {
+          const isActive = inputSource === source.key;
+          return (
+            <button
+              key={source.key}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              tabIndex={isActive ? 0 : -1}
+              onClick={() => setInputSource(source.key)}
+              className={[
+                "group relative flex-1 overflow-hidden rounded-md border px-2 py-1.5 text-left",
+                "transition-all duration-200 ease-out",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/50",
+                isActive
+                  ? "border-teal-500/50 bg-teal-500/10 shadow-glow"
+                  : "border-transparent hover:border-slate-700 hover:bg-slate-900/70",
+              ].join(" ")}
+            >
+              <span
+                className={`absolute inset-x-2 bottom-0 h-px origin-center bg-teal-400 transition-transform duration-300 ease-out ${
+                  isActive ? "scale-x-100 opacity-100" : "scale-x-0 opacity-0"
+                }`}
+                aria-hidden="true"
+              />
+              <span
+                className={`block text-[11px] font-semibold uppercase tracking-wider transition-colors duration-200 ${
+                  isActive ? "text-teal-300" : "text-slate-500 group-hover:text-slate-300"
+                }`}
+              >
+                {source.label}
+              </span>
+              <span
+                className={`block text-[9px] leading-tight transition-colors duration-200 ${
+                  isActive ? "text-teal-400/70" : "text-slate-600 group-hover:text-slate-500"
+                }`}
+              >
+                {source.sub}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       {!isLocation ? (
-        <p className="text-[11px] text-ink-muted">
-          Upload GeoTIFF/PNG or switch to <span className="text-ink-secondary">Search by location</span> to auto-fetch Sentinel-2.
+        <p className="text-[11px] leading-relaxed text-slate-500">
+          Upload GeoTIFF/PNG below, or switch to{" "}
+          <span className="text-slate-400">Location</span> to resolve a place into Sentinel-2
+          scenes.
         </p>
       ) : (
-        <div className="space-y-2.5">
+        <div className="search-reveal space-y-3">
           <div>
-            <label className="block text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em] mb-1.5">
+            <label htmlFor="location-query" className="field-label">
               {showSecond ? "Location T1 (or single)" : "Place name or coordinates"}
             </label>
             <div className="relative">
               <input
+                id="location-query"
                 value={locationQuery}
                 onChange={(e) => setLocationQuery(e.target.value)}
-                onFocus={() => setFocused(true)}
-                onBlur={() => setTimeout(() => setFocused(false), 200)}
                 placeholder="Bengaluru, India  or  12.97, 77.59"
-                className="w-full bg-surface-900/60 border border-surface-400/40 text-ink placeholder-ink-muted/60 px-3 py-2.5 pr-8 text-[13px] rounded-lg focus:outline-none focus:border-accent/50 transition-colors"
+                autoComplete="off"
+                className="field pr-9"
               />
               {locationQuery && (
                 <button
+                  type="button"
                   onClick={handleClear}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-muted hover:text-signal-red text-[10px] px-1"
+                  aria-label="Clear location fields"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded px-1 text-[11px]
+                    text-slate-500 transition-colors hover:text-rose-400
+                    focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/50"
                 >
                   ✕
                 </button>
               )}
             </div>
-            {parsed && (
-              <p className="text-[10px] text-signal-green mt-1">Detected coordinates: {parsed.lat.toFixed(4)}, {parsed.lon.toFixed(4)}</p>
-            )}
-            {!parsed && locationQuery.trim().length > 2 && (
-              <p className="text-[10px] text-ink-muted mt-1">Will geocode via Nominatim (OpenStreetMap) → Planetary Computer Sentinel-2</p>
-            )}
+            {/* Real feedback: only shown when the field genuinely parses as lat,lon. */}
+            <CoordinateReadout parsed={parsed} query={locationQuery} id="coords-1" />
           </div>
 
           {showSecond && (
-            <div>
-              <label className="block text-[11px] font-medium text-ink-muted uppercase tracking-[0.1em] mb-1.5">
+            <div className="search-reveal">
+              <label htmlFor="location-query-2" className="field-label">
                 Location T2 (bi-temporal second date)
               </label>
               <input
+                id="location-query-2"
                 value={locationQuery2}
                 onChange={(e) => setLocationQuery2(e.target.value)}
                 placeholder="Mumbai, India  or  leave empty to fetch 2 dates for T1"
-                className="w-full bg-surface-900/60 border border-surface-400/40 text-ink placeholder-ink-muted/60 px-3 py-2.5 text-[13px] rounded-lg focus:outline-none focus:border-accent/50 transition-colors"
+                autoComplete="off"
+                className="field"
               />
-              {parsed2 && (
-                <p className="text-[10px] text-signal-green mt-1">Detected coordinates: {parsed2.lat.toFixed(4)}, {parsed2.lon.toFixed(4)}</p>
-              )}
-              <p className="text-[10px] text-ink-muted mt-1">
-                If empty, same location will be used for T1 and T2 (two most recent scenes).
-              </p>
+              <CoordinateReadout parsed={parsed2} query={locationQuery2} id="coords-2" />
             </div>
           )}
 
-          <div className="bg-surface-800/50 border border-surface-400/20 rounded-lg px-3 py-2 space-y-1">
-            <p className="text-[10px] font-medium text-ink-secondary">How it works</p>
-            <p className="text-[10px] text-ink-muted leading-relaxed">
-              Place name → Nominatim (no key) → lat/lon → Planetary Computer STAC <code className="text-accent/70">sentinel-2-l2a</code>{" "}
-              (2km AOI, least-cloudy recent). For <code className="text-accent/70">optical-sar</code>, also fetches{" "}
-              <code className="text-accent/70">sentinel-1-rtc</code> SAR. No Google Earth Engine needed.
-            </p>
-            {focused && (
-              <p className="text-[10px] text-ink-muted">
-                Tip: paste <code className="text-ink-secondary">lat,lon</code> to skip geocoding.
-              </p>
-            )}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60">
+            <button
+              type="button"
+              onClick={() => setShowHelp((v) => !v)}
+              aria-expanded={showHelp}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left
+                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-teal-500/50"
+            >
+              <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-500">
+                How it works
+              </span>
+              <svg
+                width="10"
+                height="10"
+                viewBox="0 0 12 12"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                aria-hidden="true"
+                className={`ml-auto text-slate-600 transition-transform duration-200 ${
+                  showHelp ? "rotate-180" : ""
+                }`}
+              >
+                <path d="M3 5l3 3 3-3" strokeLinecap="round" />
+              </svg>
+            </button>
+            <div
+              className={`grid transition-all duration-300 ease-out ${
+                showHelp ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0"
+              }`}
+            >
+              <div className="overflow-hidden">
+                <p className="px-3 pb-3 text-[10px] leading-relaxed text-slate-500">
+                  Place name → Nominatim (OpenStreetMap, no key) → lat/lon → Planetary Computer
+                  STAC{" "}
+                  <code className="text-teal-400/80">sentinel-2-l2a</code>, least-cloudy scene in a
+                  2 km AOI over the last 90 days. For{" "}
+                  <code className="text-teal-400/80">optical-sar</code> it also fetches{" "}
+                  <code className="text-teal-400/80">sentinel-1-rtc</code>. No Google Earth Engine
+                  needed.
+                </p>
+              </div>
+            </div>
           </div>
 
-          <p className="text-[11px] text-ink-muted">
-            On submit, fetched Sentinel-2 imagery will appear in the viewer before analysis runs.
+          <p className="text-[11px] leading-relaxed text-slate-500">
+            Fetched scenes appear in the viewer before analysis runs.
           </p>
         </div>
       )}
     </div>
   );
+}
+
+/** Coordinate confirmation that animates in, plus an honest hint otherwise. */
+function CoordinateReadout({
+  parsed,
+  query,
+  id,
+}: {
+  parsed: { lat: number; lon: number } | null;
+  query: string;
+  id: string;
+}) {
+  if (parsed) {
+    return (
+      <p
+        id={id}
+        className="coords-ok mt-1.5 flex items-center gap-1.5 text-[10px] text-emerald-400"
+        role="status"
+      >
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M3.5 8.5l3 3 6-6"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+        {formatCoords(parsed.lat, parsed.lon)}
+      </p>
+    );
+  }
+  if (query.trim().length > 2) {
+    return (
+      <p id={id} className="mt-1.5 text-[10px] text-slate-500">
+        Geocoding on submit via Nominatim
+      </p>
+    );
+  }
+  return null;
 }

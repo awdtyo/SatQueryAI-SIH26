@@ -1,4 +1,7 @@
 import { useEffect, useState } from "react";
+import StatusPill from "./ui/StatusPill";
+import type { HealthState } from "../types/api";
+import { computeLabel, deviceLabel, isServiceOnline } from "../lib/systemStatus";
 
 function useUtcClock() {
   const [time, setTime] = useState(() => new Date());
@@ -9,69 +12,106 @@ function useUtcClock() {
   return time.toISOString().slice(0, 19).replace("T", " ") + " UTC";
 }
 
-type HealthProp = {
-  status?: string;
-  compute?: string;
-  device?: string;
-  force_cpu?: boolean;
-} | null;
+interface Props {
+  health?: HealthState;
+  /** Real pending state of the outgoing request. */
+  isRunning?: boolean;
+  /** Opens a stacked sidebar — only surfaced below the `xl` breakpoint. */
+  onOpenPanel?: (side: "left" | "right") => void;
+}
 
-export default function Header({ health }: { health?: HealthProp }) {
+/**
+ * Application header.
+ *
+ * The right-hand cluster shows only values the backend actually reported —
+ * compute, device/GPU and the real UTC clock. When the Gradio transport is in
+ * use there is no `/api/health`, so the compute and device readouts are simply
+ * omitted rather than defaulted to a plausible-looking "CPU-ONLY".
+ */
+export default function Header({ health = null, isRunning = false, onOpenPanel }: Props) {
   const utcTime = useUtcClock();
-  const isCpuOnly = health?.force_cpu ?? true; // default to CPU-only per backend config
-  const computeLabel = isCpuOnly ? "CPU-ONLY" : (health?.compute?.toUpperCase() ?? "CPU");
-  const deviceLabel = health?.device ?? "cpu";
+  const online = isServiceOnline(health);
+  const compute = computeLabel(health);
+  const device = deviceLabel(health);
 
   return (
-    <header className="h-[56px] flex-shrink-0 border-b border-surface-400/40 bg-surface-800/90 flex items-center px-5 gap-6">
+    <header className="flex h-14 flex-shrink-0 items-center gap-4 border-b border-slate-800 bg-slate-900 px-4 sm:px-5">
+      {onOpenPanel && (
+        <button
+          type="button"
+          onClick={() => onOpenPanel("left")}
+          aria-label="Open imagery input and query log"
+          className="icon-btn h-8 w-8 xl:hidden"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M3 6h18M3 12h18M3 18h18" strokeLinecap="round" />
+          </svg>
+        </button>
+      )}
+
       {/* Brand block */}
-      <div className="flex items-center gap-3">
-        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" className="text-accent flex-shrink-0">
+      <div className="flex min-w-0 items-center gap-3">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" aria-hidden="true" className="flex-shrink-0 text-teal-400">
           <circle cx="12" cy="12" r="2.5" fill="currentColor" />
           <rect x="1" y="11" width="7" height="2" rx="0.5" fill="currentColor" opacity="0.35" />
           <rect x="16" y="11" width="7" height="2" rx="0.5" fill="currentColor" opacity="0.35" />
           <line x1="3.5" y1="9.5" x2="3.5" y2="14.5" stroke="currentColor" strokeWidth="0.6" opacity="0.25" />
           <line x1="20.5" y1="9.5" x2="20.5" y2="14.5" stroke="currentColor" strokeWidth="0.6" opacity="0.25" />
-          <circle cx="12" cy="12" r="9.5" stroke="currentColor" strokeWidth="0.4" opacity="0.1" strokeDasharray="2 3" />
+          <circle cx="12" cy="12" r="9.5" stroke="currentColor" strokeWidth="0.4" opacity="0.15" strokeDasharray="2 3" />
         </svg>
-        <div className="leading-tight">
+        <div className="min-w-0 leading-tight">
           <div className="flex items-baseline gap-1.5">
-            <span className="text-[17px] font-semibold tracking-wide text-ink">
-              SAT<span className="text-accent">QUERY</span>
+            <span className="text-[17px] font-semibold tracking-wide text-slate-100">
+              SAT<span className="text-teal-400">QUERY</span>
             </span>
-            <span className="text-[11px] font-mono text-accent tracking-[0.15em]">AI</span>
+            <span className="font-mono text-[11px] tracking-[0.15em] text-teal-400/80">AI</span>
           </div>
-          <p className="text-[10px] font-medium text-ink-muted tracking-[0.12em] uppercase">
+          <p className="hidden truncate text-[10px] font-medium uppercase tracking-[0.12em] text-slate-500 sm:block">
             Remote Sensing Intelligence
           </p>
         </div>
       </div>
 
-      {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Right telemetry — light touch */}
-      <div className="hidden md:flex items-center gap-5 text-[11px]">
-        <TelemetryLabel value="SAT-QUERY-01" label="MISSION" />
-        <div className="w-px h-4 bg-surface-400/30" />
-        <TelemetryLabel value="ANALYSIS" label="MODE" />
-        <div className="w-px h-4 bg-surface-400/30" />
-        <div className="hidden lg:block">
-          <TelemetryLabel value={utcTime} label="UTC" mono />
-        </div>
+      {/* Right telemetry — reported values only, UTC clock is always real. */}
+      <div className="hidden items-center gap-5 text-[11px] 2xl:flex">
+        {compute && <TelemetryLabel value={compute} label="Compute" />}
+        {device && (
+          <>
+            {compute && <div className="h-4 w-px bg-slate-800" />}
+            <TelemetryLabel value={device} label="Device" mono />
+          </>
+        )}
+        <div className="h-4 w-px bg-slate-800" />
+        <TelemetryLabel value={utcTime} label="UTC" mono />
       </div>
 
-      {/* CPU-specific health badge + online status */}
-      <div className="flex items-center gap-3">
-        <span className="hidden sm:inline-flex items-center gap-1.5 px-2 py-1 rounded border border-accent/25 bg-accent/10 text-[10px] font-medium tracking-wider text-accent">
-          <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-          {computeLabel}
-          <span className="text-accent/60 font-mono">·</span>
-          <span className="font-mono text-accent/80">{deviceLabel}</span>
+      <div className="flex items-center gap-2">
+        <span className="hidden items-center gap-1.5 font-mono text-[10px] text-slate-500 sm:flex">
+          {compute ? <span className="text-slate-600">{compute}</span> : null}
+          {compute && device ? <span className="text-slate-700">·</span> : null}
+          {device ? <span className="truncate">{device}</span> : null}
         </span>
-        <span className="w-2 h-2 rounded-full bg-signal-green" />
-        <span className="text-[11px] font-medium text-ink-secondary">System Online</span>
+        <StatusPill
+          status={!health ? "unknown" : isRunning ? "processing" : online ? "ready" : "error"}
+          label={!health ? "NO DATA" : isRunning ? "Analyzing" : online ? "Ready" : "Offline"}
+        />
       </div>
+
+      {onOpenPanel && (
+        <button
+          type="button"
+          onClick={() => onOpenPanel("right")}
+          aria-label="Open execution trace and system status"
+          className="icon-btn h-8 w-8 xl:hidden"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+            <path d="M4 6h16M4 12h10M4 18h16" strokeLinecap="round" />
+            <circle cx="18" cy="12" r="2" />
+          </svg>
+        </button>
+      )}
     </header>
   );
 }
@@ -87,10 +127,8 @@ function TelemetryLabel({
 }) {
   return (
     <div className="flex flex-col leading-tight">
-      <span className="text-[9px] font-medium text-ink-muted tracking-[0.15em]">{label}</span>
-      <span className={`text-[11px] text-ink-secondary ${mono ? "font-mono tabular-nums" : ""}`}>
-        {value}
-      </span>
+      <span className="text-[9px] font-medium uppercase tracking-[0.15em] text-slate-600">{label}</span>
+      <span className={`text-[11px] text-slate-400 ${mono ? "font-mono tabular-nums" : ""}`}>{value}</span>
     </div>
   );
 }

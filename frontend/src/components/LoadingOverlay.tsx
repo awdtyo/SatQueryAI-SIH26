@@ -1,128 +1,131 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
+import AnalysisIndicator from "./ui/AnalysisIndicator";
+import CapabilityCard from "./ui/CapabilityCard";
+import SatelliteTipCard from "./ui/SatelliteTipCard";
+import TraceNodeList from "./ui/ExecutionTimeline";
+import { buildTraceView } from "../lib/analysisStages";
+import type { HealthState } from "../types/api";
 
-interface Props {
+interface LoadingOverlayProps {
+  /** Real pending state from the query request — nothing here fakes progress. */
   visible: boolean;
-  message?: string;
+  /** Health payload, so the node chain reads READY vs. unreachable. */
+  health?: HealthState;
 }
 
-const STEPS = [
-  "Query Parsed",
-  "Task Classified",
-  "Model Selected",
-  "Imagery Analyzed",
-  "Evidence Generated",
-  "Result Compiled",
-];
+/** Tip rotation period. */
+const TIP_INTERVAL_MS = 3500;
+/** Keep the first seconds clean; surface a capability card only on longer runs. */
+const CAPABILITY_AFTER_MS = 4000;
 
-const STATUS_MESSAGES = [
-  "Scanning imagery...",
-  "Classifying land cover...",
-  "Running change detection...",
-  "Processing spectral bands...",
-  "Analyzing spatial features...",
-  "Fusing optical and SAR data...",
-  "Computing vegetation indices...",
-  "Generating evidence references...",
-];
-
-function useStepProgress(visible: boolean) {
-  const [currentStep, setCurrentStep] = useState(0);
-  const [completedSteps, setCompletedSteps] = useState<number[]>([]);
+/** Seconds the request has genuinely been in flight. */
+function useElapsed(visible: boolean): number {
+  const [seconds, setSeconds] = useState(0);
 
   useEffect(() => {
     if (!visible) {
-      setCurrentStep(0);
-      setCompletedSteps([]);
+      setSeconds(0);
       return;
     }
-
-    const stepDuration = 300;
-    const timer = setInterval(() => {
-      setCurrentStep((prev) => {
-        if (prev >= STEPS.length - 1) {
-          clearInterval(timer);
-          return prev;
-        }
-        setCompletedSteps((c) => [...c, prev]);
-        return prev + 1;
-      });
-    }, stepDuration);
-
-    return () => clearInterval(timer);
+    const started = Date.now();
+    const id = setInterval(() => {
+      setSeconds(Math.floor((Date.now() - started) / 1000));
+    }, 1000);
+    return () => clearInterval(id);
   }, [visible]);
 
-  return { currentStep, completedSteps };
+  return seconds;
 }
 
-export default function LoadingOverlay({ visible, message }: Props) {
-  const { currentStep, completedSteps } = useStepProgress(visible);
+/** True once a run has been pending long enough to warrant the capability card. */
+function useShowCapability(visible: boolean, afterMs: number): boolean {
+  const [show, setShow] = useState(false);
+
+  useEffect(() => {
+    if (!visible) {
+      setShow(false);
+      return;
+    }
+    const id = setTimeout(() => setShow(true), afterMs);
+    return () => {
+      clearTimeout(id);
+      setShow(false);
+    };
+  }, [visible, afterMs]);
+
+  return show;
+}
+
+/**
+ * Analysis overlay for an in-flight query.
+ *
+ * Gated entirely on the real pending flag. The node chain shows nothing
+ * complete and no stage cursor walks through invented names — it reads
+ * "REQUEST IN FLIGHT" with a travelling signal, which is the only thing the
+ * app can honestly claim until the response arrives. The progress bar is
+ * indeterminate; elapsed time is measured, not simulated.
+ */
+export default function LoadingOverlay({ visible, health = null }: LoadingOverlayProps) {
+  const seconds = useElapsed(visible);
+  const showCapability = useShowCapability(visible, CAPABILITY_AFTER_MS);
+  const view = buildTraceView(health, visible, null);
 
   if (!visible) return null;
 
-  const displayMessage = message ?? STATUS_MESSAGES[currentStep % STATUS_MESSAGES.length];
+  const mm = String(Math.floor(seconds / 60)).padStart(2, "0");
+  const ss = String(seconds % 60).padStart(2, "0");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-surface-900/70 backdrop-blur-sm">
-      <div className="panel w-96">
-        <div className="panel-header">
-          <span className="panel-label">Analysis in Progress</span>
-          <div className="flex-1" />
-          <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-        </div>
-        <div className="panel-body space-y-4">
-          {/* Pipeline steps */}
-          <div className="space-y-1">
-            {STEPS.map((step, i) => {
-              const isCompleted = completedSteps.includes(i);
-              const isCurrent = i === currentStep;
+    // Scrim is light enough that the right-hand Execution Trace panel keeps
+    // animating behind it; the card itself is opaque `bg-slate-900`.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-4">
+      <section
+        className="panel max-h-[90vh] w-full max-w-md overflow-y-auto border-teal-500/25 shadow-2xl"
+        aria-label="Analysis in progress"
+      >
+        <header className="panel-header">
+          <h2 className="panel-label">Analysis in Progress</h2>
+          <span
+            className="ml-auto font-mono text-[11px] tabular-nums text-slate-500"
+            aria-hidden="true"
+          >
+            {mm}:{ss}
+          </span>
+          <span className="h-1.5 w-1.5 flex-shrink-0 animate-pulse rounded-full bg-teal-400" aria-hidden="true" />
+        </header>
 
-              return (
-                <div key={i} className="flex items-center gap-3 py-0.5">
-                  <span className="w-5 flex-shrink-0 flex justify-center">
-                    {isCompleted ? (
-                      <svg width="15" height="15" viewBox="0 0 16 16" fill="none" className="text-signal-green">
-                        <path d="M3.5 8.5l3 3 6-6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    ) : (
-                      <span
-                        className={`block w-2 h-2 rounded-full transition-colors duration-200 ${
-                          isCurrent ? "bg-accent animate-pulse" : "bg-surface-400/40"
-                        }`}
-                      />
-                    )}
-                  </span>
-                  <span
-                    className={`text-[12px] transition-colors duration-200 ${
-                      isCompleted
-                        ? "text-ink-secondary"
-                        : isCurrent
-                          ? "text-accent font-medium"
-                          : "text-ink-muted/50"
-                    }`}
-                  >
-                    {step}
-                  </span>
-                </div>
-              );
-            })}
+        <div className="panel-body space-y-4">
+          <p className="sr-only" role="status" aria-live="polite">
+            Request in flight. {view.summary}
+          </p>
+
+          <div className="flex flex-col items-center gap-3 py-1">
+            <AnalysisIndicator size={84} />
+            <p className="text-center font-mono text-[12px] font-semibold tracking-[0.16em] text-teal-300">
+              Request in flight
+            </p>
+          </div>
+
+          {/* indeterminate — a real percentage is not knowable until the response lands */}
+          <div
+            className="relative h-0.5 overflow-hidden rounded-full bg-slate-800"
+            role="progressbar"
+            aria-label="Analysis in progress"
+            aria-busy="true"
+          >
+            <span className="animate-shimmer absolute inset-y-0 left-0 w-1/3 rounded-full bg-gradient-to-r from-transparent via-teal-400 to-transparent" />
           </div>
 
           <div className="divider" />
 
-          {/* Status message */}
-          <div className="text-center">
-            <p className="text-[13px] text-accent/80">{displayMessage}</p>
-          </div>
+          <TraceNodeList nodes={view.nodes} inFlight={view.inFlight} />
 
-          {/* Progress bar */}
-          <div className="h-1 bg-surface-400/30 rounded-full overflow-hidden">
-            <div
-              className="h-full bg-accent/70 rounded-full transition-all duration-300"
-              style={{ width: `${((currentStep + 1) / STEPS.length) * 100}%` }}
-            />
-          </div>
+          <div className="divider" />
+
+          <SatelliteTipCard intervalMs={TIP_INTERVAL_MS} />
+          {showCapability && <CapabilityCard />}
         </div>
-      </div>
+      </section>
     </div>
   );
 }
