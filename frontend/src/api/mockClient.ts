@@ -59,9 +59,10 @@ function resolveTransport(): Transport {
 
 function gradioBase(): string {
   // Production (Vercel, non-localhost page): same-origin serverless proxy
-  // /api/gradio → Space /gradio_api. The proxy (frontend/api/gradio/[...path].ts)
-  // holds HF_TOKEN server-side and attaches `Authorization: Bearer` so ZeroGPU
-  // attributes usage to our own quota, not the anonymous pool (which 429s).
+  // /api/gradio → Space /gradio_api. The proxy (frontend/api/gradio/*.ts,
+  // logic in frontend/proxyLib/gradioProxy.ts) holds HF_TOKEN server-side
+  // and attaches `Authorization: Bearer` so ZeroGPU attributes usage to our
+  // own quota, not the anonymous pool (which 429s).
   // The browser bundle NEVER sees the token — do not add auth headers here.
   if (typeof window !== "undefined") {
     const host = window.location.hostname;

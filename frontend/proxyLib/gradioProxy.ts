@@ -1,31 +1,16 @@
 /**
- * Vercel serverless proxy: browser → same-origin /api/gradio/* → HF Space /gradio_api/*.
+ * Shared Gradio → HF Space proxy logic (imported by the explicit route files
+ * under frontend/api/gradio/). Kept OUTSIDE api/ so it never becomes a route.
  *
- * Why this exists: the React app calls the Space's Gradio queue API
- * (upload → call/predict → SSE stream). Called anonymously from a browser,
- * ZeroGPU attributes the job to a shared anonymous-caller quota pool and the
- * call fails with 429 from device-api.zero/schedule. This proxy attaches
- * `Authorization: Bearer <HF_TOKEN>` server-side so usage is attributed to
- * the Space owner's own ZeroGPU quota.
- *
- * Security: HF_TOKEN lives ONLY in server-side env (Vercel Project →
- * Settings → Environment Variables, all environments). It is never part of
- * the browser bundle — the client calls same-origin /api/gradio with no
- * token. Client-supplied Authorization/Cookie headers are stripped, and only
- * the Gradio queue paths the frontend uses are forwarded (no open proxy).
+ * Browser → same-origin /api/gradio/* → Space /gradio_api/*, attaching
+ * `Authorization: Bearer <HF_TOKEN>` server-side so ZeroGPU bills the
+ * account's own quota instead of the anonymous pool (which 429s).
  */
 
-export const config = {
-  // NOTE: maxDuration 60 = Vercel Hobby plan ceiling (300+ needs Pro and
-  // fails deploy on Hobby). Warm queries take ~1-2s; first cold start can
-  // approach the limit — the client surfaces a timeout and can retry warm.
-  maxDuration: 60,
+const ALLOWED: Record<string, string[]> = {
+  info: ["info"],
+  upload: ["upload"],
 };
-
-// First Gradio path segment the frontend is allowed to reach through the proxy:
-// upload (POST multipart), call/predict + call/predict/{event_id} (queue + SSE),
-// info (health), file (fetched-image bytes — same shape, harmless to allow).
-const ALLOWED_FIRST_SEGMENTS = new Set(["upload", "call", "info", "file"]);
 
 function spaceBase(): string {
   return (process.env.SATQUERY_SPACE_URL || "").replace(/\/$/, "");
@@ -40,29 +25,7 @@ function readRawBody(req: any): Promise<Buffer | null> {
   });
 }
 
-function getPathSegments(req: any): string[] {
-  const q = req.query?.path;
-  if (Array.isArray(q) && q.length > 0) return q.map(String);
-  if (typeof q === "string" && q) return [q];
-  // Fallback: derive from the URL itself (some runtimes don't populate
-  // req.query with catch-all route params).
-  const urlPath = String(req.url || "").split("?")[0];
-  const prefix = "/api/gradio/";
-  const idx = urlPath.indexOf(prefix);
-  const rest = idx >= 0 ? urlPath.slice(idx + prefix.length) : urlPath.replace(/^\/+/, "");
-  return rest
-    .split("/")
-    .filter(Boolean)
-    .map((s) => {
-      try {
-        return decodeURIComponent(s);
-      } catch {
-        return s;
-      }
-    });
-}
-
-export default async function handler(req: any, res: any): Promise<void> {
+export async function proxyGradio(req: any, res: any, segments: string[]): Promise<void> {
   const base = spaceBase();
   if (!base || !/^https:\/\//i.test(base)) {
     res.status(500).json({
@@ -73,14 +36,13 @@ export default async function handler(req: any, res: any): Promise<void> {
     return;
   }
 
-  const rawPath: string[] = getPathSegments(req);
-  if (rawPath.length === 0 || !ALLOWED_FIRST_SEGMENTS.has(rawPath[0] ?? "")) {
+  if (segments.length === 0) {
     res.status(404).json({ error: "Not found" });
     return;
   }
 
   const qs = req.url && req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-  const upstreamUrl = `${base}/gradio_api/${rawPath.map(encodeURIComponent).join("/")}${qs}`;
+  const upstreamUrl = `${base}/gradio_api/${segments.map(encodeURIComponent).join("/")}${qs}`;
 
   const headers: Record<string, string> = {};
   if (typeof req.headers?.["content-type"] === "string") {
@@ -150,3 +112,5 @@ export default async function handler(req: any, res: any): Promise<void> {
     res.end();
   }
 }
+
+export { ALLOWED };
