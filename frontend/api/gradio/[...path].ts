@@ -40,6 +40,28 @@ function readRawBody(req: any): Promise<Buffer | null> {
   });
 }
 
+function getPathSegments(req: any): string[] {
+  const q = req.query?.path;
+  if (Array.isArray(q) && q.length > 0) return q.map(String);
+  if (typeof q === "string" && q) return [q];
+  // Fallback: derive from the URL itself (some runtimes don't populate
+  // req.query with catch-all route params).
+  const urlPath = String(req.url || "").split("?")[0];
+  const prefix = "/api/gradio/";
+  const idx = urlPath.indexOf(prefix);
+  const rest = idx >= 0 ? urlPath.slice(idx + prefix.length) : urlPath.replace(/^\/+/, "");
+  return rest
+    .split("/")
+    .filter(Boolean)
+    .map((s) => {
+      try {
+        return decodeURIComponent(s);
+      } catch {
+        return s;
+      }
+    });
+}
+
 export default async function handler(req: any, res: any): Promise<void> {
   const base = spaceBase();
   if (!base || !/^https:\/\//i.test(base)) {
@@ -51,11 +73,7 @@ export default async function handler(req: any, res: any): Promise<void> {
     return;
   }
 
-  const rawPath: string[] = Array.isArray(req.query?.path)
-    ? req.query.path
-    : typeof req.query?.path === "string"
-      ? [req.query.path]
-      : [];
+  const rawPath: string[] = getPathSegments(req);
   if (rawPath.length === 0 || !ALLOWED_FIRST_SEGMENTS.has(rawPath[0] ?? "")) {
     res.status(404).json({ error: "Not found" });
     return;
