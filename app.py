@@ -281,7 +281,7 @@ def _error_trace(message: str, started: float) -> dict[str, Any]:
     }
 
 
-@spaces.GPU(duration=120)  # ZeroGPU: cold pull ~4GB takes 30-60s + location fetch; 15s got preempted -> generic "Query processing failed" with no logs
+@spaces.GPU(duration=60)  # ZeroGPU: quota is deducted per requested second — 60 covers warm (~2s) + typical cold pull, burns half the quota of 120
 def predict(
     query: str,
     input_mode: str,
@@ -539,7 +539,7 @@ with gr.Blocks(
         """
         # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
         **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); Stage-3 **change real `imadityasarkar/cdvqa_change` bi-temporal**, fusion stub.
-        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=120)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
+        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=60)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
         """
     )
 
@@ -717,7 +717,7 @@ with gr.Blocks(
         """
         ---
         **Local Docker (CPU-only, i5/16GB):** `make pitch-demo` or `SATQUERY_FORCE_CPU=1 uvicorn backend.main:app --port 8000` + `npm run dev` (`5173`). **HF Spaces Gradio ZeroGPU:** this `app.py` on `zero-a10g` with `SATQUERY_FORCE_CPU=0` (`Spaces → Settings → Variables`). See `docs/hf_spaces.md` (Docker) and `docs/hf_spaces_gradio.md` (ZeroGPU).
-        If **Execute Analysis** does nothing, check `Spaces → Logs` for `Gradio startup health: deferred` and `Spaces → Settings → Hardware` is `zero-a10g`. First click cold-pulls ~4GB (30-60s), warm ~1.2s. `predict` uses `duration=120` to cover cold load + location fetch; health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
+        If **Execute Analysis** does nothing, check `Spaces → Logs` for `Gradio startup health: deferred` and `Spaces → Settings → Hardware` is `zero-a10g`. First click cold-pulls ~4GB (30-60s), warm ~1.2s. `predict` uses `duration=60` (quota deducted per requested second, so keep it tight); health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
         """
     )
 

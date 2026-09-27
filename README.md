@@ -148,7 +148,7 @@ Question-aware output — **bullets replace paragraphs**, charts are **measured 
 | **Counting** | **Ultralytics ≥8.2** (`yolov8n.pt`), **OpenCV ≥4.8** | `backend/models/yolo.py:1`, configurable via `SATQUERY_YOLO_*` |
 | **Charts / Vision** | **Pillow ≥10**, `numpy<2`, `torchvision ≥0.18`, `matplotlib ≥3.5`, `rasterio` (optional) | `Pillow` for `RGB` conversion, `rasterio` for `.tif` bands, `matplotlib` for Gradio plots |
 | **Frontend** | **React 18**, **Vite 6**, **Tailwind 3**, **TypeScript 5**, **Recharts 2**, `react-markdown` | 3-zone console, local Vite proxy `/api → 8000`, prod same-origin Vercel proxy `/api/gradio/*` → Space (server-side `HF_TOKEN`, own ZeroGPU quota), poll health every 15s |
-| **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=120)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0`, cheap (model-free) health by default |
+| **Spaces** | **Gradio 5.16.1** + `spaces` ZeroGPU (`app.py`) | `@spaces.GPU(duration=60)` on `zero-a10g`, `SATQUERY_FORCE_CPU=0`, cheap (model-free) health by default |
 | **Training env** | **Google Colab T4** (15GB, sm_75, fp16), fallback Kaggle T4×2 | Free-tier safe: Drive checkpoints, subset caching |
 | **Testing** | `pytest`, `httpx`, `ruff`, `mypy` | `tests/test_controller_api.py`, `tests/test_registry.py`, `tests/test_vqa_wrapper.py` |
 
@@ -338,7 +338,7 @@ print(r.json()["answer"])
 
 ### Run via HF Spaces (ZeroGPU)
 
-Space: `https://huggingface.co/spaces/imadityasarkar/satquery-backend` — Gradio `zero-a10g` `app.py` with `@spaces.GPU(duration=120)` (`SATQUERY_FORCE_CPU=0` enables 4-bit on Blackwell, `~1s` vs `~70s` CPU; 120s covers the ~4 GB cold pull + location fetch). Frontend is `app.py` Blocks; local React console remains at `5173`. Health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
+Space: `https://huggingface.co/spaces/imadityasarkar/satquery-backend` — Gradio `zero-a10g` `app.py` with `@spaces.GPU(duration=60)` (`SATQUERY_FORCE_CPU=0` enables 4-bit on Blackwell, `~1s` vs `~70s` CPU; 60s covers warm inference + typical cold pull while billing half the quota of 120s — ZeroGPU deducts requested seconds per call). Frontend is `app.py` Blocks; local React console remains at `5173`. Health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
 
 ### Run via Docker (CPU or auto-GPU)
 
