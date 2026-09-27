@@ -76,29 +76,35 @@ def _search_pc_stac(
 ) -> list[dict]:
     """Search Planetary Computer STAC via pystac-client with HTTP fallback."""
     endpoint = config.SATQUERY_STAC_ENDPOINT
-    # Prefer pystac-client
+    # Overall budget so a hung STAC can't kill the ZeroGPU worker (duration=120).
+    # pystac-client has no timeout param — bound it with a worker thread.
     try:
-        from pystac_client import Client  # type: ignore
+        import concurrent.futures as _fut
 
-        client = Client.open(endpoint)
-        # datetime last 90 days
-        import datetime
+        def _pystac_search() -> list[dict]:
+            from pystac_client import Client  # type: ignore
 
-        end = datetime.datetime.utcnow()
-        start = end - datetime.timedelta(days=90)
-        dt = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
-        search = client.search(
-            collections=[collection],
-            bbox=bbox,
-            datetime=dt,
-            query={"eo:cloud_cover": {"lt": max_cloud + 0.01}},
-            limit=limit,
-        )
-        items = list(search.items())
-        # Convert to dicts
-        dicts = [it.to_dict() for it in items]
-        if dicts:
-            return dicts
+            client = Client.open(endpoint)
+            # datetime last 90 days
+            import datetime
+
+            end = datetime.datetime.utcnow()
+            start = end - datetime.timedelta(days=90)
+            dt = f"{start.strftime('%Y-%m-%d')}/{end.strftime('%Y-%m-%d')}"
+            search = client.search(
+                collections=[collection],
+                bbox=bbox,
+                datetime=dt,
+                query={"eo:cloud_cover": {"lt": max_cloud + 0.01}},
+                limit=limit,
+            )
+            items = list(search.items())
+            return [it.to_dict() for it in items]
+
+        with _fut.ThreadPoolExecutor(max_workers=1) as _ex:
+            dicts = _ex.submit(_pystac_search).result(timeout=25)
+            if dicts:
+                return dicts
     except Exception as e:
         logger.debug("pystac-client search failed for %s: %s", collection, e)
 
@@ -117,7 +123,7 @@ def _search_pc_stac(
             "limit": limit,
         }
         url = endpoint.rstrip("/") + "/search"
-        r = requests.post(url, json=payload, timeout=15)
+        r = requests.post(url, json=payload, timeout=12)
         r.raise_for_status()
         j = r.json()
         feats = j.get("features", [])
@@ -284,9 +290,9 @@ def fetch_imagery_for_location(
             # Same AOI, two dates: fetch 2 most recent distinct scenes
             aoi_km = config.SATQUERY_LOCATION_AOI_KM
             bbox = _bbox_from_point(loc["lat"], loc["lon"], aoi_km)
-            items = _search_pc_stac(bbox, "sentinel-2-l2a", max_cloud_cover or config.SATQUERY_MAX_CLOUD_COVER, limit=20)
+            items = _search_pc_stac(bbox, "sentinel-2-l2a", max_cloud_cover or config.SATQUERY_MAX_CLOUD_COVER, limit=10)
             if len(items) < 2:
-                items = _search_pc_stac(bbox, "sentinel-2-l2a", 100.0, limit=20)
+                items = _search_pc_stac(bbox, "sentinel-2-l2a", 100.0, limit=10)
             if len(items) < 2:
                 raise HTTPException(
                     status_code=502,

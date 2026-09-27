@@ -190,7 +190,16 @@ def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[n
         import matplotlib.pyplot as plt  # type: ignore
 
         labels = [str(d.get("label", ""))[:12] for d in chart_data]
-        values = [float(d.get("value", 0)) for d in chart_data]
+        values = []
+        for d in chart_data:
+            try:
+                v = float(d.get("value", 0))
+            except Exception:
+                v = 0.0
+            # Gradio JSON/Plot chokes on NaN/inf — clamp to finite
+            if v != v or v in (float("inf"), float("-inf")):
+                v = 0.0
+            values.append(v)
         colors = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f43f5e", "#14b8a6"]
         fig, ax = plt.subplots(figsize=(4, 2.2))
         fig.patch.set_facecolor("#0f172a")
@@ -228,8 +237,15 @@ def _chart_to_plot(chart_state: Any, chart_type: str = "Bar"):  # type: ignore[n
             ax.tick_params(colors="#94a3b8", labelsize=8)
             plt.setp(ax.get_xticklabels(), rotation=20, ha="right")
         plt.tight_layout()
+        plt.close(fig)
         return fig
     except Exception:
+        try:
+            import matplotlib.pyplot as plt  # type: ignore
+
+            plt.close("all")
+        except Exception:
+            pass
         return None
 
 
@@ -247,7 +263,7 @@ def _b64_to_pil(b64_str: str) -> Image.Image | None:
         return None
 
 
-@spaces.GPU(duration=15)  # ZeroGPU: 60s fits free quota, cold pull via cache; 90s exceeds anon quota and hangs UI
+@spaces.GPU(duration=120)  # ZeroGPU: cold pull ~4GB takes 30-60s + location fetch; 15s got preempted -> generic "Query processing failed" with no logs
 def predict(
     query: str,
     input_mode: str,
@@ -255,7 +271,7 @@ def predict(
     image_b: Any | None = None,
     location_query: str | None = None,
     location_query_2: str | None = None,
-) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any] | None]:
+) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any]]:
     """Gradio handler — decorated for ZeroGPU scheduling.
 
     Args:
@@ -271,13 +287,39 @@ def predict(
         Gradio outputs: Markdown, Number, JSON, Markdown, State (for Plot) + Gallery (for location preview)
     """
     started = time.time()
+    try:
+        return _predict_inner(
+            query, input_mode, image_a, image_b, location_query, location_query_2, started
+        )
+    except Exception as e:
+        logger.exception("Gradio predict outer failure: %s", e)
+        try:
+            import torch  # type: ignore
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        # gr.Error surfaces the message in the UI instead of generic "Query processing failed"
+        raise gr.Error(f"Query processing failed: {e}. Check trace JSON for detail.") from e
+
+
+def _predict_inner(
+    query: str,
+    input_mode: str,
+    image_a: Any,
+    image_b: Any | None,
+    location_query: str | None,
+    location_query_2: str | None,
+    started: float,
+) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any]]:
     if not query or not query.strip():
-        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "none"}, None
+        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "distribution"}, []
 
     # Validate mode
     mode = (input_mode or "single").strip().lower()
     if mode not in app_config.SUPPORTED_INPUT_MODES:
-        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "none"}, None
+        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
 
     # Collect images per mode — with location fallback (alternative to upload)
     loc_q = (location_query or "").strip() or None
@@ -293,7 +335,7 @@ def predict(
             if has_location and image_a is None:
                 images = []  # location will be resolved server-side
             elif image_a is None:
-                return "Upload one image for single mode, or enter a place name / lat,lon in *Search by location*.", 0.0, {}, "", {"data": [], "type": "none"}, None
+                return "Upload one image for single mode, or enter a place name / lat,lon in *Search by location*.", 0.0, {}, "", {"data": [], "type": "distribution"}, []
             else:
                 images.append(_coerce_gradio_image(image_a, "image.png"))
         elif mode in ("optical-sar", "bi-temporal"):
@@ -304,17 +346,17 @@ def predict(
                 if has_location and mode == "bi-temporal":
                     images = []
                 else:
-                    return f"Upload two images for {mode} (both slots required), or enter location(s) to auto-fetch.", 0.0, {}, "", {"data": [], "type": "none"}, None
+                    return f"Upload two images for {mode} (both slots required), or enter location(s) to auto-fetch.", 0.0, {}, "", {"data": [], "type": "distribution"}, []
             elif image_a is None or image_b is None:
-                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "none"}, None
+                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "distribution"}, []
             else:
                 images.append(_coerce_gradio_image(image_a, "image0.png"))
                 images.append(_coerce_gradio_image(image_b, "image1.png"))
         else:
-            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "none"}, None
+            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
     except Exception as e:
         logger.exception("Image coercion failed: %s", e)
-        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "none"}, None
+        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
 
     # Delegate to controller (reuses validate_inputs, classify_task, registry.predict, ExecutionTrace)
     # If location provided and images empty, controller resolves via geocode + Planetary Computer STAC
@@ -334,26 +376,16 @@ def predict(
             from fastapi import HTTPException as _HTTPException
 
             if isinstance(e, _HTTPException):
-                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "none"}, None
+                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "distribution"}, []
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
-        # Also surface specialist load error if model not ready (VQA / change / fusion)
-        vqa_err = ""
-        try:
-            from backend.models import vqa_specialist as _vqa, change_specialist as _change, fusion_specialist as _fusion
-
-            if mode == "bi-temporal":
-                info = _change.get_model_info()
-            elif mode == "optical-sar":
-                info = _fusion.get_model_info()
-            else:
-                info = _vqa.get_model_info()
-            if not info.get("is_real"):
-                vqa_err = f" | Model not ready: {info.get('load_error') or 'adapter not loaded'} (adapter={info.get('adapter_path')}, device={info.get('device')})"
-        except Exception:
-            pass
-        return f"Controller error: {e}{vqa_err}", 0.0, {"error": str(e), "traceback": _tb.format_exc()[:3000], "vqa_info": vqa_err}, f"Error: {e}\n{ _tb.format_exc()[:1500]}", {"data": [], "type": "none"}, None
+        # NOTE: do NOT call get_model_info() here — it blocks on HF download
+        # inside the dying GPU worker and masks the real error. Surface the
+        # controller message directly so the UI gets detail instead of a
+        # generic failure.
+        tb_str = _tb.format_exc()
+        return f"Controller error: {e}", 0.0, {"error": str(e), "traceback": tb_str[:3000]}, f"Error: {e}\n{tb_str[:1500]}", {"data": [], "type": "distribution"}, []
 
     # Build evidence markdown for display
     evidence_md_parts: list[str] = []
@@ -371,8 +403,14 @@ def predict(
     except Exception:
         trace_dict = resp.execution_trace.dict()  # fallback v1
 
-    # Confidence gauge text
-    conf = float(resp.confidence)
+    # Confidence gauge text — clamp to finite [0,1] so gr.Number/JSON never chokes
+    try:
+        conf = float(resp.confidence)
+    except Exception:
+        conf = 0.0
+    if conf != conf or conf in (float("inf"), float("-inf")):
+        conf = 0.0
+    conf = max(0.0, min(1.0, conf))
     wall_ms = int((time.time() - started) * 1000)
 
     # Append wall time to trace for transparency (not part of schema, just info)
@@ -383,12 +421,28 @@ def predict(
     # Chart data for identical bar/pie toggle — question-aware (count vs distribution)
     chart_data: list[dict[str, Any]] = []
     chart_type_data: str = "distribution"
+    def _safe_chart_items(items: Any) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        try:
+            for c in items or []:
+                try:
+                    label = str(getattr(c, "label", "?"))[:12]
+                    v = float(getattr(c, "value", 0))
+                except Exception:
+                    continue
+                if v != v or v in (float("inf"), float("-inf")):
+                    v = 0.0
+                out.append({"label": label, "value": v})
+        except Exception:
+            return []
+        return out
+
     try:
         # Prefer flat chart, else structured
         if getattr(resp, "chart", None):
-            chart_data = [{"label": c.label, "value": float(c.value)} for c in resp.chart]  # type: ignore[attr-defined]
+            chart_data = _safe_chart_items(resp.chart)  # type: ignore[attr-defined]
         elif getattr(resp, "structured", None) and resp.structured and resp.structured.chart:  # type: ignore[attr-defined]
-            chart_data = [{"label": c.label, "value": float(c.value)} for c in resp.structured.chart]  # type: ignore[attr-defined]
+            chart_data = _safe_chart_items(resp.structured.chart)  # type: ignore[attr-defined]
         # Chart type: from response field, else infer from task
         ct = getattr(resp, "chart_type", None)
         if ct:
@@ -409,29 +463,31 @@ def predict(
     trace_dict["_chart_type"] = chart_type_data
 
     # Build fetched gallery for location mode (show Sentinel-2 preview in viewer)
-    fetched_gallery: list[Any] | None = None
+    # gr.Gallery expects a list — never return None (serialization flake).
+    fetched_gallery: list[Any] = []
     try:
         resolved = getattr(resp, "resolved_images", None)
         if resolved:
             gallery = []
             for ri in resolved:
-                b64 = ri.preview_b64 if hasattr(ri, "preview_b64") else ri.get("preview_b64") if isinstance(ri, dict) else None
-                display = ri.display_name if hasattr(ri, "display_name") else ri.get("display_name") if isinstance(ri, dict) else None
-                scene = ri.scene_id if hasattr(ri, "scene_id") else ri.get("scene_id") if isinstance(ri, dict) else None
-                caption = display or scene or "Fetched Sentinel-2"
-                pil = _b64_to_pil(b64) if b64 else None
-                if pil is not None:
-                    gallery.append((pil, caption))
-                elif b64:
-                    # Fallback: keep b64 as is for Gallery
-                    gallery.append((b64, caption))
+                try:
+                    b64 = ri.preview_b64 if hasattr(ri, "preview_b64") else ri.get("preview_b64") if isinstance(ri, dict) else None
+                    display = ri.display_name if hasattr(ri, "display_name") else ri.get("display_name") if isinstance(ri, dict) else None
+                    scene = ri.scene_id if hasattr(ri, "scene_id") else ri.get("scene_id") if isinstance(ri, dict) else None
+                    caption = display or scene or "Fetched Sentinel-2"
+                    pil = _b64_to_pil(b64) if b64 else None
+                    if pil is not None:
+                        gallery.append((pil, caption))
+                except Exception:
+                    continue
             if gallery:
                 fetched_gallery = gallery
         # Also surface location in trace for Gradio viewer
-        if has_location and trace_dict.get("parameters", {}).get("location_resolved"):
-            trace_dict["_location_preview_count"] = len(fetched_gallery) if fetched_gallery else 0
-    except Exception:
-        fetched_gallery = None
+        if has_location and isinstance(trace_dict.get("parameters", {}), dict) and trace_dict.get("parameters", {}).get("location_resolved"):
+            trace_dict["_location_preview_count"] = len(fetched_gallery)
+    except Exception as e:
+        logger.warning("Gallery build failed (non-fatal): %s", e)
+        fetched_gallery = []
 
     return resp.answer, conf, trace_dict, evidence_md, chart_state, fetched_gallery
 
@@ -457,7 +513,7 @@ with gr.Blocks(
         """
         # SatQuery AI — Agentic Vision-Language Assistant for Remote Sensing
         **Smart India Hackathon 2026** — Natural-language querying of single & paired satellite imagery (optical, SAR) with evidence-grounded answers and full `ExecutionTrace`. Stage-2 **VQA+grounding real QLoRA Qwen2-VL-2B `imadityasarkar/satquery-phase2-vrsbench`** (VRSBench/RSVQA SFT continuing Stage-1 BigEarthNet); Stage-3 **change real `imadityasarkar/cdvqa_change` bi-temporal**, fusion stub.
-        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=30)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
+        > **ZeroGPU:** Blackwell `48GB large` via `@spaces.GPU(duration=120)` — ~1s vs `30s` CPU. **Docker local** (`make pitch-demo`, `SATQUERY_FORCE_CPU=1`) stays CPU-only for i5/16GB.
         """
     )
 
@@ -567,17 +623,27 @@ with gr.Blocks(
 
     @spaces.GPU(duration=30)
     def _health_gpu() -> dict[str, Any]:
-        try:
-            h = registry.health()
-            # Add adapter info for quick debug — VQA, change (bi-temporal) and fusion (optical-SAR)
+        # Cheap by default: NO model load inside the GPU worker (loading all 3
+        # Qwen2-VL-2B adapters + YOLO in one 30s worker OOMs and burns quota).
+        # Set SATQUERY_HEALTH_LOAD_MODEL=1 in Space Variables to opt into a
+        # full registry.health() load for debugging.
+        if os.getenv("SATQUERY_HEALTH_LOAD_MODEL", "0").lower() not in ("1", "true", "yes", "on"):
+            info: dict[str, Any] = dict(_health_prefilled)
+            info["status"] = "Space ready (cheap health — no model load)"
+            info["note"] = "Set SATQUERY_HEALTH_LOAD_MODEL=1 to load models in this worker (slow, may OOM)"
             try:
-                from backend.models import vqa_specialist as _vqa, change_specialist as _change, fusion_specialist as _fusion
+                import torch  # type: ignore
 
-                h["_vqa_info"] = _vqa.get_model_info()
-                h["_change_info"] = _change.get_model_info()
-                h["_fusion_info"] = _fusion.get_model_info()
+                info["cuda_available"] = bool(torch.cuda.is_available())
+                try:
+                    info["cuda_device"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+                except Exception:
+                    pass
             except Exception:
                 pass
+            return info
+        try:
+            h = registry.health()
             return h
         except Exception as e:
             import traceback
@@ -588,7 +654,15 @@ with gr.Blocks(
         return _health_prefilled
 
     def _update_chart(chart_state: Any, chart_type: str):  # type: ignore[no-untyped-def]
-        return _chart_to_plot(chart_state or {"data": [], "type": "distribution"}, chart_type or "Bar")
+        try:
+            return _chart_to_plot(chart_state or {"data": [], "type": "distribution"}, chart_type or "Bar")
+        finally:
+            try:
+                import matplotlib.pyplot as plt  # type: ignore
+
+                plt.close("all")
+            except Exception:
+                pass
 
     refresh_health.click(fn=_health_gpu, outputs=[health])
     # Initial health load — prefilled, no GPU quota cost
@@ -617,12 +691,12 @@ with gr.Blocks(
         """
         ---
         **Local Docker (CPU-only, i5/16GB):** `make pitch-demo` or `SATQUERY_FORCE_CPU=1 uvicorn backend.main:app --port 8000` + `npm run dev` (`5173`). **HF Spaces Gradio ZeroGPU:** this `app.py` on `zero-a10g` with `SATQUERY_FORCE_CPU=0` (`Spaces → Settings → Variables`). See `docs/hf_spaces.md` (Docker) and `docs/hf_spaces_gradio.md` (ZeroGPU).
-        If **Execute Analysis** does nothing, check `Spaces → Logs` for `Gradio startup health: deferred` and `Spaces → Settings → Hardware` is `zero-a10g`. First click cold-pulls ~4GB (30-60s), warm ~1.2s. Anon quota is 60s – `duration=60` fits.
+        If **Execute Analysis** does nothing, check `Spaces → Logs` for `Gradio startup health: deferred` and `Spaces → Settings → Hardware` is `zero-a10g`. First click cold-pulls ~4GB (30-60s), warm ~1.2s. `predict` uses `duration=120` to cover cold load + location fetch; health is cheap (no model load) unless `SATQUERY_HEALTH_LOAD_MODEL=1`.
         """
     )
 
     clear_btn.click(
-        fn=lambda: (None, None, "", "", "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None, None),
+        fn=lambda: (None, None, "", "", "", "single", "*Awaiting analysis — bullets will appear here*", 0.0, {}, "", {"data": [], "type": "distribution"}, None, []),
         inputs=None,
         outputs=[
             image_a,
