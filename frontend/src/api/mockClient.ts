@@ -224,9 +224,15 @@ async function galleryToResolvedImages(value: unknown): Promise<ResolvedImagePre
   if (!Array.isArray(value) || value.length === 0) return null;
   const out: ResolvedImagePreview[] = [];
   for (const item of value) {
-    if (!isRecord(item)) continue;
-    const image = item["image"];
-    const caption = typeof item["caption"] === "string" ? item["caption"] : undefined;
+    // Gradio 5.x Gallery API items are {image: FileData, caption} but tolerate [image, caption] tuples
+    const record = Array.isArray(item)
+      ? { image: item[0], caption: typeof item[1] === "string" ? item[1] : undefined }
+      : isRecord(item)
+        ? item
+        : null;
+    if (!record) continue;
+    const image = record["image"];
+    const caption = typeof record["caption"] === "string" ? record["caption"] : undefined;
     const raw = isRecord(image)
       ? typeof image["url"] === "string"
         ? image["url"]
@@ -259,15 +265,29 @@ async function galleryToResolvedImages(value: unknown): Promise<ResolvedImagePre
  */
 async function normalizeGradioOutputs(outputs: unknown[]): Promise<QueryResponse> {
   const answer = typeof outputs[0] === "string" ? outputs[0] : "";
-  const confidence = typeof outputs[1] === "number" ? outputs[1] : 0;
+  const confidence = typeof outputs[1] === "number" && isFinite(outputs[1]) ? outputs[1] : 0;
   const rawTrace = isRecord(outputs[2]) ? outputs[2] : {};
-  const evidenceRefs = rawTrace["evidence_refs"];
+  // Guarantee a schema-valid trace: error paths may omit keys and the UI reads
+  // models_used.length / evidence_refs.length unconditionally (crashed React before).
+  const trace = {
+    task: "unknown",
+    models_used: [],
+    parameters: {},
+    confidence,
+    evidence_refs: [],
+    total_latency_ms: 0,
+    ...rawTrace,
+  } as unknown as ExecutionTrace;
+  if (!Array.isArray(trace.models_used)) trace.models_used = [];
+  if (!Array.isArray(trace.evidence_refs)) trace.evidence_refs = [];
+  if (typeof trace.task !== "string" || !trace.task) trace.task = "unknown";
+  const evidenceRefs = trace.evidence_refs;
   const chart = rawTrace["_chart"];
   const chartType = rawTrace["_chart_type"];
   return {
     answer,
     confidence,
-    execution_trace: rawTrace as unknown as ExecutionTrace,
+    execution_trace: trace,
     evidence: Array.isArray(evidenceRefs) ? (evidenceRefs as EvidenceRef[]) : [],
     structured: null,
     chart: Array.isArray(chart) ? (chart as ChartEntry[]) : null,

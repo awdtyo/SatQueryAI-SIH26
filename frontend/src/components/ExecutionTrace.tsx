@@ -66,7 +66,12 @@ export default function ExecutionTracePanel({ trace }: Props) {
     );
   }
 
-  const modelSteps = getModelStepIndex(trace.models_used.length, PIPELINE_STEPS.length);
+  // Defensive: Gradio error paths may return partial traces — never crash on .length
+  const modelsUsed = Array.isArray(trace.models_used) ? trace.models_used : [];
+  const evidenceRefs = Array.isArray(trace.evidence_refs) ? trace.evidence_refs : [];
+  const parameters = trace.parameters && typeof trace.parameters === "object" ? trace.parameters : {};
+  const taskLabel = typeof trace.task === "string" && trace.task ? trace.task.replace("_", " ").toUpperCase() : "UNKNOWN";
+  const modelSteps = getModelStepIndex(modelsUsed.length, PIPELINE_STEPS.length);
 
   return (
     <section className="panel flex-1 min-h-0 flex flex-col">
@@ -132,8 +137,8 @@ export default function ExecutionTracePanel({ trace }: Props) {
                       </span>
                     </div>
 
-                    {isModelStep && trace.models_used[modelSteps.indexOf(i)] && (
-                      <ModelRow model={trace.models_used[modelSteps.indexOf(i)]!} />
+                    {isModelStep && modelsUsed[modelSteps.indexOf(i)] && (
+                      <ModelRow model={modelsUsed[modelSteps.indexOf(i)]!} />
                     )}
 
                     {!isLastStep && <div className="ml-[30px] w-px h-1 bg-surface-400/20" />}
@@ -152,7 +157,7 @@ export default function ExecutionTracePanel({ trace }: Props) {
                 Task
               </span>
               <span className="text-[12px] font-medium text-accent">
-                {trace.task.replace("_", " ").toUpperCase()}
+                {taskLabel}
               </span>
             </div>
 
@@ -161,7 +166,7 @@ export default function ExecutionTracePanel({ trace }: Props) {
                 Model
               </span>
               <span className="text-[12px] text-ink-secondary">
-                {trace.models_used[0]?.name ?? "N/A"}
+                {modelsUsed[0]?.name ?? "N/A"}
               </span>
             </div>
           </div>
@@ -172,7 +177,7 @@ export default function ExecutionTracePanel({ trace }: Props) {
               Parameters
             </span>
             <div className="space-y-1.5">
-              {Object.entries(trace.parameters).map(([k, v]) => (
+              {Object.entries(parameters).map(([k, v]) => (
                 <div key={k} className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-ink-muted truncate min-w-0">{k}</span>
                   <span className="flex-1 border-b border-dotted border-surface-400/20 min-w-[10px]" />
@@ -190,7 +195,7 @@ export default function ExecutionTracePanel({ trace }: Props) {
               Evidence
             </span>
             <span className="text-[11px] text-ink-secondary">
-              {trace.evidence_refs.length} reference{trace.evidence_refs.length !== 1 ? "s" : ""}
+              {evidenceRefs.length} reference{evidenceRefs.length !== 1 ? "s" : ""}
             </span>
           </div>
         </div>

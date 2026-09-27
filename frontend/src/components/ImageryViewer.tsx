@@ -13,9 +13,11 @@ function formatFileSize(bytes: number): string {
 }
 
 export default function ImageryViewer({ images, inputMode, evidence }: Props) {
-  const primaryImage = images[0];
-  const hasEvidence = evidence.length > 0;
-  const bboxEvidence = evidence.filter((e) => e.type === "bounding_box" && e.coordinates);
+  const safeImages = Array.isArray(images) ? images : [];
+  const safeEvidence = Array.isArray(evidence) ? evidence : [];
+  const primaryImage = safeImages[0];
+  const hasEvidence = safeEvidence.length > 0;
+  const bboxEvidence = safeEvidence.filter((e) => e.type === "bounding_box" && e.coordinates);
   const isBiTemporal = inputMode === "bi-temporal";
 
   return (
@@ -39,11 +41,11 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
           }}
         />
 
-        {isBiTemporal && images.length > 0 ? (
+        {isBiTemporal && safeImages.length > 0 ? (
           /* Bi-temporal: side-by-side T1 + T2 so both evidence image_index 0/1 are visible */
           <div className="absolute inset-0 flex">
             {[0, 1].map((idx) => {
-              const img = images[idx];
+              const img = safeImages[idx];
               const label = idx === 0 ? "T1 (BEFORE)" : "T2 (AFTER)";
               return (
                 <div key={idx} className="flex-1 relative overflow-hidden border-r last:border-r-0 border-surface-400/20">
@@ -72,7 +74,7 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
             {hasEvidence && (
               <div className="absolute bottom-3 right-4 flex items-center gap-1.5 pointer-events-none bg-surface-900/70 px-1.5 py-0.5 rounded">
                 <span className="w-1.5 h-1.5 rounded-full bg-signal-amber" />
-                <span className="text-[10px] font-medium text-signal-amber/80">{evidence.length} EVIDENCE</span>
+                <span className="text-[10px] font-medium text-signal-amber/80">{safeEvidence.length} EVIDENCE</span>
               </div>
             )}
           </div>
@@ -132,7 +134,7 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
             {hasEvidence && (
               <div className="absolute bottom-3 right-4 flex items-center gap-1.5 pointer-events-none">
                 <span className="w-1.5 h-1.5 rounded-full bg-signal-amber" />
-                <span className="text-[10px] font-medium text-signal-amber/80">{evidence.length} EVIDENCE</span>
+                <span className="text-[10px] font-medium text-signal-amber/80">{safeEvidence.length} EVIDENCE</span>
               </div>
             )}
           </>
@@ -163,9 +165,9 @@ export default function ImageryViewer({ images, inputMode, evidence }: Props) {
         <span>Bands: {inputMode === "optical-sar" ? "OPT + SAR" : inputMode === "bi-temporal" ? "T1 + T2" : "RGB"}</span>
         <span>Res: Auto</span>
         <div className="flex-1" />
-        {images.length > 0 ? (
+        {safeImages.length > 0 ? (
           <span className="truncate max-w-[40%]">
-            {isBiTemporal ? `${images[0]?.file.name ?? "?"} → ${images[1]?.file.name ?? "?"}` : primaryImage!.file.name}
+            {isBiTemporal ? `${safeImages[0]?.file.name ?? "?"} → ${safeImages[1]?.file.name ?? "?"}` : primaryImage!.file.name}
           </span>
         ) : (
           <span>Awaiting data</span>

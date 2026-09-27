@@ -263,6 +263,24 @@ def _b64_to_pil(b64_str: str) -> Image.Image | None:
         return None
 
 
+def _error_trace(message: str, started: float) -> dict[str, Any]:
+    """Minimal schema-valid ExecutionTrace for error paths.
+
+    The Vercel frontend reads trace.models_used.length / trace.evidence_refs.length
+    unconditionally — returning {} here used to crash the whole React tree with
+    `Cannot read properties of undefined (reading 'length')`. Always return the
+    full shape so failures render as a message, not a blank crash.
+    """
+    return {
+        "task": "error",
+        "models_used": [],
+        "parameters": {"error": str(message)[:500]},
+        "confidence": 0.0,
+        "evidence_refs": [],
+        "total_latency_ms": int((time.time() - started) * 1000),
+    }
+
+
 @spaces.GPU(duration=120)  # ZeroGPU: cold pull ~4GB takes 30-60s + location fetch; 15s got preempted -> generic "Query processing failed" with no logs
 def predict(
     query: str,
@@ -314,12 +332,13 @@ def _predict_inner(
     started: float,
 ) -> tuple[str, float, dict[str, Any], str, dict[str, Any], list[Any]]:
     if not query or not query.strip():
-        return "Please enter a query.", 0.0, {}, "No query provided.", {"data": [], "type": "distribution"}, []
+        return "Please enter a query.", 0.0, _error_trace("No query provided.", started), "No query provided.", {"data": [], "type": "distribution"}, []
 
     # Validate mode
     mode = (input_mode or "single").strip().lower()
     if mode not in app_config.SUPPORTED_INPUT_MODES:
-        return f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+        msg = f"Unsupported input_mode '{mode}'. Allowed: {sorted(app_config.SUPPORTED_INPUT_MODES)}"
+        return msg, 0.0, _error_trace(msg, started), "", {"data": [], "type": "distribution"}, []
 
     # Collect images per mode — with location fallback (alternative to upload)
     loc_q = (location_query or "").strip() or None
@@ -335,7 +354,8 @@ def _predict_inner(
             if has_location and image_a is None:
                 images = []  # location will be resolved server-side
             elif image_a is None:
-                return "Upload one image for single mode, or enter a place name / lat,lon in *Search by location*.", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+                msg = "Upload one image for single mode, or enter a place name / lat,lon in *Search by location*."
+                return msg, 0.0, _error_trace(msg, started), "", {"data": [], "type": "distribution"}, []
             else:
                 images.append(_coerce_gradio_image(image_a, "image.png"))
         elif mode in ("optical-sar", "bi-temporal"):
@@ -346,17 +366,20 @@ def _predict_inner(
                 if has_location and mode == "bi-temporal":
                     images = []
                 else:
-                    return f"Upload two images for {mode} (both slots required), or enter location(s) to auto-fetch.", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+                    msg = f"Upload two images for {mode} (both slots required), or enter location(s) to auto-fetch."
+                    return msg, 0.0, _error_trace(msg, started), "", {"data": [], "type": "distribution"}, []
             elif image_a is None or image_b is None:
-                return f"Upload two images for {mode} (both slots required).", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+                msg = f"Upload two images for {mode} (both slots required)."
+                return msg, 0.0, _error_trace(msg, started), "", {"data": [], "type": "distribution"}, []
             else:
                 images.append(_coerce_gradio_image(image_a, "image0.png"))
                 images.append(_coerce_gradio_image(image_b, "image1.png"))
         else:
-            return f"Unknown mode {mode}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+            msg = f"Unknown mode {mode}"
+            return msg, 0.0, _error_trace(msg, started), "", {"data": [], "type": "distribution"}, []
     except Exception as e:
         logger.exception("Image coercion failed: %s", e)
-        return f"Image error: {e}", 0.0, {}, "", {"data": [], "type": "distribution"}, []
+        return f"Image error: {e}", 0.0, _error_trace(f"Image error: {e}", started), "", {"data": [], "type": "distribution"}, []
 
     # Delegate to controller (reuses validate_inputs, classify_task, registry.predict, ExecutionTrace)
     # If location provided and images empty, controller resolves via geocode + Planetary Computer STAC
@@ -376,7 +399,8 @@ def _predict_inner(
             from fastapi import HTTPException as _HTTPException
 
             if isinstance(e, _HTTPException):
-                return f"Validation error ({e.status_code}): {e.detail}", 0.0, {}, f"Validation failed: {e.detail}", {"data": [], "type": "distribution"}, []
+                msg = f"Validation error ({e.status_code}): {e.detail}"
+                return msg, 0.0, _error_trace(msg, started), f"Validation failed: {e.detail}", {"data": [], "type": "distribution"}, []
         except Exception:
             pass
         logger.exception("Controller failed: %s", e)
@@ -385,7 +409,9 @@ def _predict_inner(
         # controller message directly so the UI gets detail instead of a
         # generic failure.
         tb_str = _tb.format_exc()
-        return f"Controller error: {e}", 0.0, {"error": str(e), "traceback": tb_str[:3000]}, f"Error: {e}\n{tb_str[:1500]}", {"data": [], "type": "distribution"}, []
+        err_trace = _error_trace(f"Controller error: {e}", started)
+        err_trace["traceback"] = tb_str[:3000]
+        return f"Controller error: {e}", 0.0, err_trace, f"Error: {e}\n{tb_str[:1500]}", {"data": [], "type": "distribution"}, []
 
     # Build evidence markdown for display
     evidence_md_parts: list[str] = []
