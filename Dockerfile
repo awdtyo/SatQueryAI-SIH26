@@ -15,6 +15,9 @@ RUN npm run build
 
 # ── Stage 2: Python runtime (auto GPU when available, CPU fallback) ──
 FROM python:3.12-slim AS runtime
+# CPU-slim variant: --build-arg PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+# pre-installs CPU-only torch/torchvision so requirements.txt reuses them (GHCR *-cpu tag).
+ARG PYTORCH_INDEX_URL=""
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -35,9 +38,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Python deps — torch with GPU support when available; CPU index as fallback
 # Use default PyPI index (CUDA wheels via nvidia-* deps) — falls back to CPU if no GPU at runtime
-# For strict CPU-only builds, override with --extra-index-url https://download.pytorch.org/whl/cpu
+# For strict CPU-only builds: --build-arg PYTORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip \
+  && if [ -n "$PYTORCH_INDEX_URL" ]; then pip install --no-cache-dir torch torchvision --extra-index-url "$PYTORCH_INDEX_URL"; fi \
   && pip install --no-cache-dir -r requirements.txt \
   && pip install --no-cache-dir huggingface_hub  # for HF_TOKEN auth if gated
 

@@ -354,6 +354,23 @@ open http://localhost:7860/health   # health
 
 `Dockerfile` is multi-stage: `node:20` builds `frontend/dist`, `python:3.12-slim` runs FastAPI (`PORT=7860`).
 
+### Pull a release image from GitHub Packages (GHCR)
+
+Release images are published by `.github/workflows/docker-publish.yml` on every `v*.*.*` tag
+(`full` = CUDA-capable, `-cpu` = smaller CPU-only build with torch from the CPU index):
+
+```bash
+docker pull ghcr.io/awdtyo/satqueryai-sih26:latest       # full (auto-GPU/CPU)
+docker pull ghcr.io/awdtyo/satqueryai-sih26:latest-cpu   # smaller, CPU-only
+docker run -p 7860:7860 -e SATQUERY_FORCE_CPU=1 ghcr.io/awdtyo/satqueryai-sih26:latest-cpu
+curl localhost:7860/health
+# Pin a release instead of latest:
+docker pull ghcr.io/awdtyo/satqueryai-sih26:0.1.0-cpu
+```
+
+> First push creates the `Packages` section on the GitHub repo page; the package defaults to
+> private — open `Packages → satqueryai-sih26 → Package settings → Change visibility → Public` once.
+
 ---
 
 ## API
